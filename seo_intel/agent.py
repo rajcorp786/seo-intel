@@ -35,6 +35,7 @@ from .llm import parse_json, text_of
 
 TOP_N = 25
 REF = re.compile(r"\[(C\d+)\]")
+IDS = re.compile(r"\b[GT]\d+\b")  # group / gap identifiers are names, not facts
 BAD_PROSE = re.compile(r"\d|https?:|www\.|\.[a-z]{2,4}\b/|/[a-z0-9\-_]+/|[\"“”]", re.I)
 
 
@@ -44,7 +45,7 @@ def lint(text, allowed_ids):
     refs = REF.findall(text)
     if any(r not in allowed_ids for r in refs):
         return False, f"unknown claim ids {sorted(set(r for r in refs if r not in allowed_ids))}"
-    stripped = REF.sub("", text)
+    stripped = IDS.sub("", REF.sub("", text))
     m = BAD_PROSE.search(stripped)
     if m:
         return False, f"fact outside a claim reference: '{stripped[max(0, m.start() - 15):m.end() + 15]}'"
@@ -110,16 +111,20 @@ class Agent:
         # redirect chains
         rows = ctx.store.db.execute("SELECT url, chain FROM pages WHERE site='target' AND chain IS NOT NULL AND "
                                     "chain != '[]' ORDER BY url").fetchall()
+        from .analysis import real_hops
         for u, ch in rows:
-            hops = len(json.loads(ch))
+            hops = real_hops(ch)
             inl = ctx.graph_metric(u, "inlinks_to_redirect")
             if hops >= 2 or (hops == 1 and inl >= 10):
                 cl = [self.fc(u, "redirect_hops"), self.claim(kind="chain", url=u, metric="redirect_chain",
                                                                value=ctx.chain(u, "redirect_chain")),
-                      self.gc(u, "inlinks_to_redirect")]
+                      self.gc(u, "inlinks_to_redirect"), self.fc(u, "redirect_leaves_site")]
                 imp = 0.25 + 0.4 * min(1.0, inl / 25) + 0.1 * (hops >= 2)
+                kind = "chain" if hops >= 2 else "single"
                 acts.append({"type": "fix_redirect_chain", "impact": imp, "urls": [u], "claims": cl, "core": cl,
-                             "facts": {"url": u}})
+                             "facts": {"url": u, "redirect": kind,
+                                       "note": "a chain of several redirects" if hops >= 2 else
+                                       "a single redirect; the problem is internal links still pointing at it"}})
         # canonical problems
         for r in ctx.store.db.execute("SELECT url, canonical FROM pages WHERE site='target' AND status=200 AND "
                                       "canonical IS NOT NULL AND canonical != url ORDER BY url").fetchall():
@@ -203,6 +208,13 @@ class Agent:
                     ["Pick one primary keyword per page and rewrite title, H1 and intro accordingly.",
                      "Link from the weaker page to the stronger page with the shared keyword as anchor."])
         if t == "fix_redirect_chain":
+            if f.get("redirect") == "single":
+                return ("Point internal links straight at the final page instead of a redirect",
+                        f"This address redirects [{c[1]}] and still receives internal links [{c[2]}]; it leaves the "
+                        f"site: [{c[3]}]. Every one of those links costs a redirect and, if the destination is "
+                        f"off-site, sends link equity away.",
+                        ["Update each internal link to the final destination, or remove it if the content moved "
+                         "off-site on purpose.", "Keep the redirect for external visitors."])
             return ("Collapse the redirect chain and update internal links",
                     f"This URL redirects through [{c[0]}] hops [{c[1]}] and still receives internal links [{c[2]}].",
                     ["Point the first URL directly at the final destination.",
@@ -274,14 +286,29 @@ class Agent:
         """LLM prose with tools; falls back to template. Returns (title, rationale, steps, claim_ids, source)."""
         llm = self.ctx.llm
         allowed = set(a["claims"])
+        import time as _t
+        end = getattr(self.ctx.cfg, "end_time", 0) or 0
+        if end and _t.monotonic() > end - 60:  # protect the run's time limit: template prose from here on
+            self.trace.append({"action": a["type"], "result": "template (time limit)"})
+            t, r, s = self.template(a)
+            return t, r, s, a["claims"], "template"
         if not llm.available(4000, 700):
             t, r, s = self.template(a)
             return t, r, s, a["claims"], "template"
-        system = ("You write one SEO action for a site owner. Facts may appear ONLY as claim references like [C12] "
-                  "using the claim IDs given or returned by tools. Never write digits, URLs, paths or quoted page text "
-                  "yourself. Be concrete and brief. Reply with JSON: {\"title\": str, \"rationale\": str, "
-                  "\"steps\": [str, ...], \"extra_claims\": []}. extra_claims may hold claims you want to add in the "
-                  "same schema as the given claims (without id); each will be checked against the crawl.")
+        system = (
+            "You write one SEO action for a site owner. STRICT RULES - your text is machine-checked and rejected "
+            "if broken:\n"
+            "1. Every fact (any number, count, status code, score, URL, title, sentence, anchor) must be written ONLY "
+            "as its claim reference, e.g. [C12]. Use the claim IDs given or returned by tools.\n"
+            "2. Never write a digit anywhere in your text (no 301, 200, 404, 27, 2nd). Say 'permanent redirect', "
+            "'live page', 'not found', 'these links' instead, and cite the claim, e.g. 'redirects in [C3] hops'.\n"
+            "3. Never write URLs, paths, domains, quotes or page titles yourself; cite their claim instead.\n"
+            "4. Each reference must be exactly [C<number>] with nothing else inside the brackets.\n"
+            "Good: 'This page is reached through [C2] and still gets [C4]; point every link straight to the "
+            "final page.' Bad: 'It returns a 301 and has 27 internal links.'\n"
+            "Be concrete and brief: rationale under 70 words, at most 4 steps of one sentence each. Reply with JSON only: {\"title\": str, \"rationale\": str, \"steps\": [str, ...], "
+            "\"extra_claims\": []}. extra_claims may hold new claims in the same schema as the given claims "
+            "(without id); each is checked against the crawl.")
         payload = {"action_type": a["type"], "context": {k: v for k, v in a["facts"].items() if k not in ("links",)},
                    "claims": [self.view(c) for c in a["claims"][:40]]}
         msgs = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)[:20000]}]
@@ -330,7 +357,7 @@ class Agent:
         tool_claims = set()
         for _ in range(rounds + 1):
             try:
-                resp = llm.call(system, msgs, tools=tools, max_tokens=900)
+                resp = llm.call(system, msgs, tools=tools, max_tokens=600)
             except ValueError as e:  # over the input-token cap
                 self.log(f"LLM call skipped: {e}")
                 return None, tool_claims

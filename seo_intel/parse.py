@@ -13,6 +13,9 @@ FRAMEWORK_MARKERS = re.compile(
     r"""id=["'](?:root|app|__next|__nuxt|svelte|ember-app)["']\s*>\s*</|ng-app|data-reactroot|"""
     r"""__NEXT_DATA__|window\.__NUXT__|window\.__INITIAL_STATE__|window\.__APOLLO_STATE__|"""
     r"""<app-root|data-server-rendered|hydrate""", re.I)
+HANDLER = re.compile(r"addEventListener|\.on\(|onclick|click|submit|function\s+\w+\s*\(|\bif\s*\(", re.I)
+AUTH_NAV = re.compile(r"^/(url|account|customer_authentication|login|log-in|signin|sign-in|auth|oauth|sso|consent)"
+                      r"(/|\?|$)|[?&](sso\w*|return_to|redirect_uri|continue|state)=", re.I)
 NOSCRIPT_JS = re.compile(r"enable javascript|requires javascript|javascript is (?:disabled|required)", re.I)
 WS = re.compile(r"\s+")
 DROP_TAGS = ("script", "style", "noscript", "template", "svg", "iframe", "canvas")
@@ -100,7 +103,9 @@ def parse_page(html_text: str, url: str):
     scripts = 0
     for s in tree.iter("script"):
         scripts += 1
-        if s.text and out["js_redirect"] is None and len(s.text) < 5000:
+        # only small, unconditional scripts count: code inside click/submit handlers or named
+        # functions is not a redirect that runs on page load
+        if s.text and out["js_redirect"] is None and len(s.text) < 600 and not HANDLER.search(s.text):
             m = JS_REDIRECT.search(s.text)
             if m:
                 out["js_redirect"] = (m.group(1) or m.group(2)).strip()

@@ -28,6 +28,50 @@ Everything below was measured during development on the synthetic dev pair in `d
   Kill at 6 s / 14 s / 22 s / 30 s, then resume: the reports were **byte-identical** to an
   uninterrupted run in **4 of 4** cases.
 
+**Render speed (first real run, backlinko.com vs seo.com, 20-min budget).**
+* *Failed:* each render re-downloaded every JS bundle through the 6 req/s limiter, waited up to 5 s for
+  network idle, and post-crawl probes ran one at a time. **66 renders took 731 s (~11 s each)**, and the
+  run took **1,319 s** against a 1,200 s budget.
+* *Now:* scripts are cached across renders (150 MB cap), analytics/ads/consent trackers are blocked,
+  3 pages render in parallel (batches in a fixed order, so runs stay repeatable), and the idle wait is 2.5 s.
+  The agent also switches to template prose 60 s before the run deadline.
+
+**Redirect hops (first real run).**
+* *Failed:* the "offsite" marker in a chain was counted as a hop. A single 301 from backlinko.com to
+  searchengineland.com was reported as "2 hops", with the final URL listed twice, and the LLM then
+  guessed at a loop. *Now:* only 3xx responses count as hops. Single redirects that still receive
+  ≥ 10 internal links become "point internal links at the final page". A `redirect_leaves_site` claim
+  records off-site moves.
+
+**Render probes on slug URLs (first real run).** Templates replaced digits only, so on a slug-only site
+every page was its own template and probes used the whole 15% budget (77 of 77 renders were probes).
+Probes now group by site section (last path segment → `*`).
+
+**Rate-limited servers (real run, beardo.in vs bombayshavingcompany.com, both Shopify).**
+* *Failed:* a fixed 6 req/s with no reaction to throttling. Shopify answered **429** to **932 of 1,013**
+  (beardo.in) and **817 of 908** (bombayshavingcompany.com) page requests, so ~90% of each site was lost.
+* *Now:* like Googlebot. A 429/503 halves that host's rate (minimum 1 req/s), pauses for `Retry-After`
+  (2–60 s, default 10 s) and re-queues the URL, up to 4 retries. The rate recovers one step per 30 s
+  without a penalty. Dev site: every product page answers 429 once, and the final crawl has **0** pages
+  left at 429. Throttle counts per host are in `logs/run_stats.json`.
+
+**Hard time limits (real run r04, same Shopify pair).**
+* *Failed:* the crawl phase overran its deadline by ~270 s (frontier 1,205 s vs a 936 s deadline; whole run
+  1,228 s vs a 1,200 s budget). At shutdown the crawler waited without a limit for an in-flight render,
+  and a render's sub-resource requests queued behind the throttled host's back-off.
+* *Now:* every wait is bounded. Each render has a 25 s hard cap. Sub-resources from a paused host are
+  aborted, not queued. At the deadline, in-flight work gets ≤ 10 s to cancel. The whole crawl phase has
+  a watchdog. Back-off penalties from one 429 burst count once (5 s debounce), and the pause cap is 30 s.
+  Test: a JS file that hangs for 200 s and a 120 s budget gave a total run of **99 s**.
+
+**JS-redirect false positives (same run).**
+* *Failed:* (1) any `location.href='…'` in a small inline script, including click handlers; (2) any
+  navigation seen while rendering. bombayshavingcompany.com got **~85** "JS redirects", mostly a
+  third-party SSO script (`/url?q=…sso_continue…`) and a click handler sending to `/`. Because "redirected"
+  pages are left out of the topic space, cannibalization found only 2 groups.
+* *Now:* static detection skips scripts with handlers, conditions or named functions. Render-time
+  navigations to login/SSO/consent paths, or with `return_to`/`continue`/`sso*` params, are ignored.
+
 **Resume of a whole run.**
 * *Failed:* a site whose crawl finished before the kill was re-crawled in "incremental" mode on resume
   (wrong mode, wrong change report).
@@ -69,6 +113,15 @@ Everything below was measured during development on the synthetic dev pair in `d
 * *Now:* cluster competitor pages only, in the shared space, and measure target coverage by cosine to
   each competitor centroid. **2 of 2** found.
 
+**Same page type, different entities (first real run, backlinko.com).**
+* *Failed:* topic similarity + intent only. Pairs such as "Ahrefs Review" vs "Serpstat Review",
+  "Claude Statistics" vs "Signal Statistics", and two different free-tool pages scored severity 52–69,
+  because their shared page template dominates the vectors (topic similarity up to 0.997, content
+  overlap 0.01–0.23).
+* *Now:* words present in ≥ 3% of the site's titles/H1s (≥ 5 pages) are template words. If the two titles'
+  remaining words don't overlap, the pair is excluded as "same page type, different entities". Pairs with
+  content overlap ≥ 0.7 are never excluded, because they are real duplicates.
+
 **Grouping rule.** Requiring the same intent missed pairs such as "price guide" (informational) vs
 "best price" (commercial). A pair now also groups when topic similarity ≥ 0.85 and title overlap ≥ 0.4.
 
@@ -81,7 +134,14 @@ Everything below was measured during development on the synthetic dev pair in `d
 * *Now:* the estimate shortlists the 12 best candidates, and an exact PageRank recompute picks among them,
   K times. **99.55%** on average, **95.46%** worst case (`link_plan.json → greedy_vs_optimal_small_graphs`).
 
-**Anchors.**
+**Anchors (first real run).**
+* *Failed (2nd version):* any title word could be the anchor, including single words. Real anchors
+  were "competition", "6 Best", "Software", "Worth", and some sat in the source page's own H1.
+* *Now:* ≥ 2 real words, at least one of them a distinctive (non-template) title word of the target.
+  The sentence must end like a sentence and must not be the source's title/H1. Relevance floor raised
+  0.30 → 0.40.
+
+**Anchors (synthetic).**
 * *Failed:* anchors from top TF-IDF bigrams of the target. They produced unnatural anchors such as
   "pit fewer" and "because price".
 * *Now:* the anchor must be an exact n-gram of the sentence that matches the target's title, H1 or an
@@ -91,6 +151,11 @@ Everything below was measured during development on the synthetic dev pair in `d
 
 * *Failed:* our own template prose wrote "301-redirect". The prose linter rejected it, because digits
   outside claim references are not allowed. Templates were reworded ("redirect permanently").
+* *Failed (first real run):* a short "facts only as [Cn]" instruction. Claude Haiku still wrote "301",
+  "200" and "27 internal links" into prose, which caused **16 regenerations** in one run and several
+  template fallbacks. *Now:* numbered hard rules plus a good/bad example in the system prompt
+  ("never write a digit; say 'permanent redirect' and cite the claim"). Group/gap names (G1, T2) are
+  allowed in prose, because they are names, not facts.
 * Verified with a scripted fake LLM (`devsite/mock_agent_check.py`). On the first attempt it returns
   prose with a raw number plus an invented claim. **16 rejections** were logged, all actions were
   regenerated, and **0** invented claims and **0** raw facts reached the output.

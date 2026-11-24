@@ -9,3 +9,12 @@ seo-intel-*/
 *.db-wal
 *.db-shm
 .pytest_cache/
+run-*/
+run*/
+tough-runs/
+tough-results.zip
+check*/
+final-check/
+*.tar.gz
+labels_template.csv
+pair_labels_template.csv

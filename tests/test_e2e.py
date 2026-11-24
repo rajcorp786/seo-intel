@@ -36,6 +36,7 @@ def test_e2e(tmp_path):
         assert {c["issue"] for c in cs["canonical_issues"]} >= {"canonical chain", "canonical points to a redirect",
                                                                   "canonical points to a 404/410"}
         assert cs["rendered_share"] <= 0.15
+        assert "429" not in cs["pages_by_status"], cs["pages_by_status"]  # back-off + retry recovered them
         gaps = json.loads((tmp_path / "a" / "report" / "gaps.json").read_text())["gaps"]
         assert len(gaps) >= 2
     finally:

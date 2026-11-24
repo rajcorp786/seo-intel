@@ -24,7 +24,7 @@ from scipy import sparse
 from .graph import DAMPING, pagerank
 from .textnorm import DEV, STOP, sentences
 
-REL_MIN = 0.30
+REL_MIN = 0.40
 MAX_PER_SOURCE = 3
 TOP_M = 12
 SOURCES_PER_TARGET = 250
@@ -164,12 +164,18 @@ def target_phrases(page, top_terms, anchors):
     return seqs
 
 
-def find_anchor(main_text, phrases, title_words, existing_anchors=()):
-    """Return (sentence, anchor, score) or None. Anchor is an exact substring of the sentence,
-    contains at least one non-stop word of the target's title/H1, and the sentence holds no
-    existing link of the source page."""
+END_PUNCT = re.compile(r"[.!?।:;\"”’)]\s*$")
+
+
+def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_heads=()):
+    """Return (sentence, anchor, score) or None.
+    * anchor = exact substring of the sentence, >= 2 real words (no digits-only tokens), at least one
+      of them a DISTINCTIVE word of the target's title/H1 (site-wide template words excluded)
+    * sentence must be body text: ends like a sentence, is not the source page's own title/H1,
+      and holds no existing link of the source page"""
     best = None
     existing = [a.strip().lower() for a in existing_anchors if a and len(a.strip()) >= 3]
+    heads = {h.strip().lower() for h in source_heads if h}
     grams = set()
     for seq in phrases:
         for L in range(2, 7):
@@ -184,22 +190,20 @@ def find_anchor(main_text, phrases, title_words, existing_anchors=()):
         low = sent.lower()
         if any(a in low for a in existing):
             continue
+        if not END_PUNCT.search(sent) or low in heads or any(low and low in h for h in heads):
+            continue  # headings / list labels / the page's own title are not places for a link
         ms = list(TOKEN_I.finditer(sent))
         toks = [m.group(0).lower() for m in ms]
         cand = None
         for L in range(min(6, len(toks)), 1, -1):
             for i in range(len(toks) - L + 1):
                 g = toks[i:i + L]
-                if tuple(g) in grams and any(x in title_words and x not in STOP for x in g):
-                    cand = (ms[i].start(), ms[i + L - 1].end(), sum(1 for x in g if x not in STOP))
+                words = [x for x in g if x not in STOP and not x.isdigit() and len(x) >= 2]
+                if tuple(g) in grams and len(words) >= 2 and any(x in title_words for x in words):
+                    cand = (ms[i].start(), ms[i + L - 1].end(), len(words))
                     break
             if cand:
                 break
-        if not cand:
-            for i, tk in enumerate(toks):
-                if tk in title_words and tk not in STOP and len(tk) >= 5:
-                    cand = (ms[i].start(), ms[i].end(), 0.5)
-                    break
         if cand and (best is None or cand[2] > best[2]):
             best = (sent, sent[cand[0]:cand[1]], cand[2])
             if cand[2] >= 3:

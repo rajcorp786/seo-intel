@@ -15,7 +15,10 @@ from .render import RENDER_SHARE, RenderPolicy, token_gain
 from .robots import Robots
 from .sitemap import discover
 from .traps import TrapDetector
-from .urlnorm import host_of, is_asset, netloc_of, normalize, reg_domain
+from .urlnorm import host_of, is_asset, netloc_of, normalize, reg_domain, site_scope
+
+
+MAX_RETRIES = 4
 
 
 def sha(s) -> str:
@@ -44,7 +47,7 @@ class SiteCrawl:
         self.store, self.role, self.cfg, self.f, self.renderer, self.log = store, role, cfg, fetcher, renderer, log
         self.start_url = domain if "://" in domain else f"https://{domain.strip('/')}/"
         self.start_url = normalize(self.start_url)[0]
-        self.domain = reg_domain(host_of(self.start_url))
+        self.domain = site_scope(host_of(self.start_url))
         self.robots = {}
         self.traps = TrapDetector()
         self.policy = RenderPolicy()
@@ -56,11 +59,12 @@ class SiteCrawl:
         self.trap_avoided = 0
         self.run = 0
         self.mode = "fresh"
+        self.retries = {}
 
     # ------------------------------------------------------------ helpers
     def same_site(self, url):
         h = host_of(url)
-        return h == self.domain or h.endswith("." + self.domain)
+        return h == self.domain or h.endswith("." + self.domain) or h == "www." + self.domain
 
     async def robots_for(self, url):
         host = netloc_of(url)
@@ -133,7 +137,11 @@ class SiteCrawl:
             self.replay_traps()
             self.restore_render_queue()
         start_host = netloc_of(self.start_url)
-        await self.robots_for(self.start_url)
+        rb0 = await self.robots_for(self.start_url)
+        if rb0.mode == "disallow_all":
+            self.log(f"[{self.role}] ERROR: robots.txt of {start_host} could not be read (status "
+                     f"{rb0.status if rb0.status is not None else 'network error'}). Google treats this as "
+                     f"'do not crawl', so nothing will be fetched. Check that the site opens in a browser.")
 
         if self.mode != "resume" or not st.get_meta(f"seeded:{self.role}:{self.run}"):
             self.enqueue([(self.start_url, 0, 1000.0, None)], "start")
@@ -245,13 +253,18 @@ class SiteCrawl:
                 exc = d.exception()
                 if exc:
                     self.log(f"[{self.role}] worker error: {type(exc).__name__}: {exc}")
-        if pending:
-            # deadline: cancel in-flight; their URLs stay 'queued' => no lost work on resume
-            for p in pending:
-                p.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+        stragglers = set(pending)
         if render_task and not render_task.done():
-            await asyncio.gather(render_task, return_exceptions=True)
+            if self.deadline_ok():
+                await asyncio.wait([render_task], timeout=max(1.0, self.deadline - time.monotonic()))
+            stragglers.add(render_task)
+        stragglers = {t for t in stragglers if not t.done()}
+        if stragglers:
+            # deadline: cancel in-flight work; their URLs stay 'queued' => no lost work on resume.
+            # Wait at most 10 s for cancellation, never indefinitely.
+            for t in stragglers:
+                t.cancel()
+            await asyncio.wait(stragglers, timeout=10)
 
     # ------------------------------------------------------------ one URL
     async def process(self, url, depth, lastmod):
@@ -283,6 +296,13 @@ class SiteCrawl:
                     cond["If-Modified-Since"] = prev["last_modified"]
             r = await self.f.fetch(url, cond_headers=cond, same_site=self.same_site)
             self.n_requests_pages += 1 + len(r.get("chain", []))
+            if r.get("status") in (429, 503) and not r.get("chain"):
+                n = self.retries.get(url, 0)
+                self.f.limiter.penalize(host_of(url), (r.get("headers") or {}).get("retry-after"))
+                if n < MAX_RETRIES:
+                    self.retries[url] = n + 1
+                    return  # stays 'queued': fetched again after the host's back-off
+            
             if r.get("status") == 304 and prev is not None:
                 self.carry_over(url, depth)
                 st.update_page(url, etag=r["headers"].get("etag") or prev["etag"])
@@ -426,26 +446,41 @@ class SiteCrawl:
         if not self.renderer.available:
             return
         from collections import defaultdict
-        from .urlnorm import template
+        from .urlnorm import section_template as template
         by_tpl = defaultdict(list)
         for (u,) in self.store.db.execute(
                 "SELECT url FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND rendered=0 AND scripts>0 "
                 "AND run=? ORDER BY url", (self.role, self.run)):
             by_tpl[template(u)].append(u)
         from .render import PROBES_PER_TEMPLATE
+        n_par = max(1, self.renderer.n)
+
+        async def batch(urls, reason):
+            """Render in parallel batches; the budget is checked per batch in a fixed order (repeatable)."""
+            out = []
+            for i in range(0, len(urls), n_par):
+                take = min(n_par, self.render_budget())
+                if take <= 0 or not self.deadline_ok():
+                    return out, False
+                part = urls[i:i + take]
+                gains = await asyncio.gather(*(self.render_one(u, reason) for u in part))
+                out.extend(zip(part, gains))
+                if take < n_par and i + take < len(urls):
+                    return out, False
+            return out, True
+
         for tpl in sorted(by_tpl):
             urls = sorted(by_tpl[tpl], key=lambda u: sha(u))
-            for u in urls[:PROBES_PER_TEMPLATE]:
-                if self.render_budget() <= 0 or not self.deadline_ok():
-                    return
-                g = await self.render_one(u, "probe")
+            res, ok = await batch(urls[:PROBES_PER_TEMPLATE], "probe")
+            for u, g in res:
                 if g is not None:
                     self.policy.learn(u, g)
+            if not ok:
+                return
             if self.policy.template_js.get(tpl):
-                for u in urls[PROBES_PER_TEMPLATE:]:
-                    if self.render_budget() <= 0 or not self.deadline_ok():
-                        return
-                    await self.render_one(u, "template_js")
+                _, ok = await batch(urls[PROBES_PER_TEMPLATE:], "template_js")
+                if not ok:
+                    return
 
     async def render_one(self, url, reason):
         """Render one stored page; update fields/links if rendering changed it. Returns token gain."""
@@ -463,7 +498,12 @@ class SiteCrawl:
         row = {}
         links = self.apply_fields(row, fields, url)
         if nav_target:
-            row["js_redirect"] = normalize(nav_target, url)[0]
+            from urllib.parse import urlsplit
+            sp = urlsplit(nav_target)
+            if P.AUTH_NAV.search(sp.path + ("?" + sp.query if sp.query else "")):
+                nav_target = None  # login/SSO/consent scripts navigating a headless browser: not a redirect
+            else:
+                row["js_redirect"] = normalize(nav_target, url)[0]
         upd = {k: row[k] for k in ("title", "h1", "canonical", "meta_robots", "hreflang", "js_redirect")
                if row.get(k) is not None}
         if gain > 0.05 or nav_target:

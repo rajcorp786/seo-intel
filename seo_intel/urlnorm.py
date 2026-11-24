@@ -83,6 +83,16 @@ def normalize(url: str, base: str | None = None) -> tuple[str | None, str | None
     return urlunsplit((sp.scheme.lower(), netloc, path, query, "")), session
 
 
+def site_scope(host: str) -> str:
+    """Crawl scope for the host the user gave:
+    'example.com' / 'www.example.com' -> example.com and all its subdomains;
+    'docs.example.com' (an explicit subdomain) -> only docs.example.com (and its own subdomains)."""
+    h = host.lower().strip(".")
+    if h.startswith("www."):
+        h = h[4:]
+    return h if h != reg_domain(h) else reg_domain(h)
+
+
 def is_asset(url: str) -> bool:
     return bool(SKIP_EXT.search(urlsplit(url).path))
 
@@ -94,3 +104,13 @@ def template(url: str) -> str:
     p = re.sub(r"\d+", "{n}", p)
     keys = sorted({k for k, _ in parse_qsl(sp.query, keep_blank_values=True)})
     return p + ("?" + "&".join(keys) if keys else "")
+
+
+def section_template(url: str) -> str:
+    """Coarser template for render probing: last path segment -> '*' (slug sites have no digits,
+    so template() would make every page its own template)."""
+    sp = urlsplit(url)
+    segs = [x for x in sp.path.split("/") if x]
+    base = "/" + "/".join(re.sub(r"\d+", "{n}", x) for x in segs[:-1]) if len(segs) > 1 else ""
+    keys = sorted({k for k, _ in parse_qsl(sp.query, keep_blank_values=True)})
+    return (base + "/*") + ("?" + "&".join(keys) if keys else "")

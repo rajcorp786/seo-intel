@@ -15,6 +15,11 @@ LIGHT = "url, site, status, final_url, chain, canonical, title, h1, meta_robots,
         "word_count, soft404, depth"
 
 
+def real_hops(chain_json):
+    """Number of actual 3xx responses (markers like 'offsite'/'loop' are not hops)."""
+    return sum(1 for _, st in json.loads(chain_json or "[]") if isinstance(st, int))
+
+
 class Context:
     def __init__(self, store, cfg, log, llm):
         self.store, self.cfg, self.log, self.llm = store, cfg, log, llm
@@ -39,7 +44,10 @@ class Context:
         if p is None:
             return None
         if field == "redirect_hops":
-            return len(json.loads(p["chain"] or "[]"))
+            return real_hops(p["chain"])
+        if field == "redirect_leaves_site":
+            ch = json.loads(p["chain"] or "[]")
+            return any(st == "offsite" for _, st in ch)
         if field == "soft404":
             return bool(p["soft404"])
         if field == "canonical_target_status":
@@ -87,7 +95,7 @@ class Context:
             p = self.page(url)
             if not p:
                 return None
-            ch = json.loads(p["chain"] or "[]")
+            ch = [c for c in json.loads(p["chain"] or "[]") if isinstance(c[1], int)]
             return [c[0] for c in ch] + [p["final_url"]] if ch else None
         if metric == "canonical_chain":
             out, cur = [url], url
@@ -470,6 +478,8 @@ def stage_links(ctx):
             eligible.append(u)
     E = np.array([ctx.zi[u] for u in eligible])
     cands = []
+    site_pages = [dict(ctx.page(u)) for u in eligible]
+    common = cannibal.common_title_words(site_pages)
     for t in pri:
         if t not in ctx.zi:
             continue
@@ -480,7 +490,8 @@ def stage_links(ctx):
         terms = space.top_terms(ctx.zi[t], 8) if space.X is not None else []
         phrases = linkopt.target_phrases(dict(tp), terms, ctx.anchors.get(t, []))
         from .textnorm import tokens as _tk
-        title_words = set(_tk(f"{tp['title'] or ''} {tp['h1'] or ''}", drop_stop=True))
+        all_words = set(_tk(f"{tp['title'] or ''} {tp['h1'] or ''}", drop_stop=True))
+        title_words = (all_words - common) or all_words
         for j in order:
             if sims[j] < linkopt.REL_MIN:
                 break
@@ -489,7 +500,8 @@ def stage_links(ctx):
                 continue
             mt = ctx.page_field(s, "main_text") or ""
             ex = [r[0] for r in ctx.store.db.execute("SELECT anchor FROM links WHERE src=? AND block='content'", (s,))]
-            fa = linkopt.find_anchor(mt, phrases, title_words, ex)
+            sp_ = ctx.page(s)
+            fa = linkopt.find_anchor(mt, phrases, title_words, ex, (sp_["title"], sp_["h1"]))
             if not fa:
                 continue
             cands.append((g.idx[s], g.idx[t], {"source": s, "target": t, "sentence": fa[0], "anchor": fa[1],

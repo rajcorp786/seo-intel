@@ -33,6 +33,7 @@ class Config:
     render: bool = True
     use_llm: bool = True
     workers: int = 0
+    end_time: float = 0.0  # monotonic deadline for the whole run
 
 
 class RamMonitor(threading.Thread):
@@ -97,13 +98,29 @@ async def crawl_both(store, cfg, log, deadline, resume_run=False):
                 f"Fix: python -m playwright install chromium   ({renderer.error})")
     for role, dom in (("target", cfg.target), ("competitor", cfg.competitor)):
         crawls[role] = SiteCrawl(store, role, dom, cfg, fetcher, renderer, log)
+    tasks = [asyncio.ensure_future(c.run_crawl(deadline, resume_run)) for c in crawls.values()]
     try:
-        await asyncio.gather(*(c.run_crawl(deadline, resume_run) for c in crawls.values()))
+        done, late = await asyncio.wait(tasks, timeout=max(5.0, deadline - time.monotonic() + 20))
+        if late:
+            log(f"WARNING: crawl did not stop at its deadline; cancelling {len(late)} site crawl(s)")
+            for t in late:
+                t.cancel()
+            await asyncio.wait(late, timeout=10)
+            for c in crawls.values():  # mark so the next run resumes instead of trusting a half state
+                if store.get_meta(f"state:{c.role}") == "running":
+                    c._save_stats()
+        for t in done:
+            if t.exception():
+                log(f"crawl error: {type(t.exception()).__name__}: {t.exception()}")
     finally:
-        await renderer.close()
-        await fetcher.close()
+        for coro in (renderer.close(), fetcher.close()):
+            try:
+                await asyncio.wait_for(coro, timeout=15)
+            except Exception:
+                pass
     return {"requests_per_host": dict(sorted(limiter.total.items())),
             "peak_requests_in_any_1s_window": dict(sorted(limiter.peak.items())),
+            "throttled_429_503_responses": dict(sorted(limiter.throttled.items())),
             "renderer_error": renderer.error}
 
 
@@ -143,6 +160,7 @@ def main(argv=None):
     store = Store(out / "crawl.db")
     first_run = store.get_meta("first_run_seconds:target") is None
     crawl_deadline = t0 + budget * cfg.crawl_share
+    cfg.end_time = t0 + budget
     timings = {}
     log(f"seo-intel: target={cfg.target} competitor={cfg.competitor} out={out}")
     resume_run = store.get_meta("run_state") == "running"

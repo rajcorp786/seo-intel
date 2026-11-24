@@ -123,6 +123,8 @@ CUES = {
          r"free shipping|cash on delivery|emi|subscribe now|sign up|download now|get started|request a quote|"
          r"₹\s?\d|rs\.?\s?\d|\$\s?\d|€\s?\d|खरीदें|अभी खरीदें|kharido|order karein", 3.0, "text"),
         (r"/(product|products|p|item|shop|buy|cart|checkout|book|booking|pricing|plans|signup|register)(/|$|-)", 2.0, "url"),
+        (r"\b(tool|checker|generator|calculator|finder|analy[sz]er|converter|tester)\b|\btry (it )?free\b", 3.0, "title"),
+        (r"/(tools?|calculator|generator|checker|app)/", 2.0, "url"),
     ],
     "commercial": [
         (r"\bbest\b|\btop \d+|\bvs\.?\b|versus|review|reviews|compare|comparison|alternatives?|cheapest|"

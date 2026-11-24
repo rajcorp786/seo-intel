@@ -83,3 +83,76 @@ def test_find_anchor_exact_substring():
     res = linkopt.find_anchor("Intro words here. Many owners ask about the home lift price before they buy one.",
                               phrases, {"home", "lift", "price", "guide"})
     assert res and res[1] in res[0] and res[1].lower() == "home lift price"
+
+
+def test_entity_pairs_are_healthy():
+    from seo_intel.cannibal import common_title_words, healthy_reason
+    pages = [{"title": f"{n} Review: Is This SEO Tool Worth It?", "h1": ""} for n in
+             ["Ahrefs", "Serpstat", "Mangools", "Majestic", "Moz", "Semrush"]]
+    pages += [{"title": f"{n} Statistics: How Many People Use {n}?", "h1": ""} for n in
+              ["Claude", "Signal", "Hulu", "Uber", "Canva"]]
+    common = common_title_words(pages)
+    base = {"hreflang": [], "lang": None, "canonical": None}
+    a = dict(base, **pages[0]); b = dict(base, **pages[1])
+    assert healthy_reason("https://e.com/ahrefs-review", "https://e.com/serpstat-review", a, b, common)
+    c = dict(base, title="Answer Engine Optimization (AEO): How to Win in AI Search", h1="")
+    d = dict(base, title="Generative Engine Optimization (GEO): How to Win in AI Search", h1="")
+    assert healthy_reason("https://e.com/aeo", "https://e.com/geo", c, d, common) is None
+
+
+def test_offsite_marker_is_not_a_hop():
+    from seo_intel.analysis import real_hops
+    import json
+    assert real_hops(json.dumps([["https://a.com/x", 301], ["https://b.com/y", "offsite"]])) == 1
+    assert real_hops(json.dumps([["http://a.com/", 301], ["https://a.com/", 301]])) == 2
+
+
+def test_anchor_rejects_headings_and_generic_words():
+    ph = linkopt.target_phrases({"title": "Ad Intelligence Software | Brand", "h1": "Best Ad Intelligence Software"},
+                                [], [])
+    tw = {"intelligence", "ad"}
+    # heading (no sentence ending) and generic single word -> rejected
+    assert linkopt.find_anchor("6 Best Ad Intelligence Software to Outsmart the Competition\nNothing else here today.",
+                               ph, tw) is None
+    assert linkopt.find_anchor("We track the competition closely every single week.", ph, tw) is None
+    r = linkopt.find_anchor("Teams now use ad intelligence software to study rival campaigns.", ph, tw)
+    assert r and r[1].lower() == "ad intelligence software"
+
+
+def test_section_template_groups_slugs():
+    from seo_intel.urlnorm import section_template
+    assert section_template("https://e.com/seo-tips") == section_template("https://e.com/link-building") == "/*"
+    assert section_template("https://e.com/tools/keyword") == "/tools/*"
+
+
+def test_js_redirect_only_unconditional():
+    f, _ = parse_page("<html><head><script>document.getElementById('b').addEventListener('click',function(){"
+                      "window.location.href='/';});</script></head><body></body></html>", "https://e.com/a")
+    assert f["js_redirect"] is None
+    f, _ = parse_page("<html><head><script>window.location.href='/new-page';</script></head></html>", "https://e.com/a")
+    assert f["js_redirect"] == "/new-page"
+    from seo_intel.parse import AUTH_NAV
+    assert AUTH_NAV.search("/url?q=https://views.x.com/?sso_continue=1")
+    assert not AUTH_NAV.search("/blog/new-post")
+
+
+def test_limiter_backoff():
+    import asyncio, time
+    from seo_intel.fetcher import HostLimiter
+    lim = HostLimiter(6)
+    lim.penalize("h", "1")
+    assert lim.rate_of("h") == 3
+
+    async def go():
+        t = time.monotonic()
+        await lim.acquire("h")
+        return time.monotonic() - t
+    assert asyncio.run(go()) >= 0.9  # waited for Retry-After
+
+
+def test_site_scope():
+    from seo_intel.urlnorm import site_scope
+    assert site_scope("www.example.com") == "example.com"
+    assert site_scope("example.co.in") == "example.co.in"
+    assert site_scope("docs.djangoproject.com") == "docs.djangoproject.com"
+    assert site_scope("www.docs.example.com") == "docs.example.com"

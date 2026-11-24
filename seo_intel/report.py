@@ -35,16 +35,20 @@ def crawl_summary(store, site):
         "SELECT render_reason FROM pages WHERE site=? AND rendered=1", (site,)) if r[0])
     traps = [dict(kind=k, pattern=p, example=e, hits=h) for k, p, e, h in db.execute(
         "SELECT kind, pattern, example, hits FROM traps WHERE site=? ORDER BY kind, pattern", (site,))]
-    chains, loops, metas, jsr, xr = [], [], [], [], []
+    chains, loops, metas, jsr, xr, offsite = [], [], [], [], [], []
     for r in db.execute("SELECT url, status, final_url, chain, meta_refresh, js_redirect, x_robots FROM pages "
                         "WHERE site=? ORDER BY url", (site,)):
         ch = json.loads(r["chain"] or "[]")
         if ch:
             item = {"url": r["url"], "hops": [[u, s] for u, s in ch], "final_url": r["final_url"]}
+            hops = sum(1 for _, s in ch if isinstance(s, int))
+            item["redirects"] = hops
             if any(s == "loop" for _, s in ch):
                 loops.append(item)
-            elif len(ch) >= 2:
+            elif hops >= 2:
                 chains.append(item)
+            if any(s == "offsite" for _, s in ch):
+                offsite.append({"url": r["url"], "final_url": r["final_url"], "redirects": hops})
         if r["meta_refresh"] and r["meta_refresh"] != r["url"]:
             metas.append({"url": r["url"], "target": r["meta_refresh"]})
         if r["js_redirect"] and r["js_redirect"] != r["url"]:
@@ -91,7 +95,7 @@ def crawl_summary(store, site):
             "traps": traps, "trap_urls_avoided": sum(t["hits"] for t in traps if t["kind"] != "session"),
             "trap_pages_fetched": trap_fetches,
             "trap_budget_share": round(trap_fetches / requests, 4) if requests else 0.0,
-            "redirect_chains": chains, "redirect_loops": loops, "meta_refresh": metas, "js_redirects": jsr,
+            "redirect_chains": chains, "redirect_loops": loops, "redirects_leaving_site": offsite, "meta_refresh": metas, "js_redirects": jsr,
             "x_robots_tag": xr, "canonical_issues": canon, "soft_404": soft,
             "urls_blocked_by_robots": store.count("SELECT COUNT(*) FROM urls WHERE site=? AND state='blocked'", (site,)),
             "urls_discovered_not_fetched": store.count("SELECT COUNT(*) FROM urls WHERE site=? AND state='queued'", (site,)),

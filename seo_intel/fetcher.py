@@ -23,19 +23,54 @@ class HostLimiter:
 
     def __init__(self, rate: float = 6.0):
         self.rate = int(rate)
+        self.rates = {}                     # per-host current rate (lowered after 429/503)
+        self.pause_until = defaultdict(float)
+        self.last_penalty = defaultdict(float)
         self.logs = defaultdict(deque)
         self.locks = defaultdict(asyncio.Lock)
         self.total = defaultdict(int)
         self.peak = defaultdict(int)
+        self.throttled = defaultdict(int)
+
+    def penalize(self, host, retry_after=None):
+        """Server said 'slow down' (429/503): halve this host's rate and pause, like Googlebot."""
+        now = time.monotonic()
+        self.throttled[host] += 1
+        if now - self.last_penalty[host] < 5 and self.pause_until[host] > now:
+            return  # many in-flight requests hit the same 429 burst: count it once
+        self.rates[host] = max(1, self.rate_of(host) // 2)
+        wait = 10.0
+        if retry_after:
+            try:
+                wait = float(retry_after)
+            except ValueError:
+                pass
+        self.pause_until[host] = max(self.pause_until[host], now + min(30.0, max(2.0, wait)))
+        self.last_penalty[host] = now
+
+    def is_paused(self, host):
+        return time.monotonic() < self.pause_until[host]
+
+    def rate_of(self, host):
+        r = self.rates.get(host, self.rate)
+        # recover one step per 30 s without a penalty
+        if r < self.rate and time.monotonic() - self.last_penalty[host] > 30:
+            r += 1
+            self.rates[host] = r
+            self.last_penalty[host] = time.monotonic()
+        return r
 
     async def acquire(self, host: str):
         async with self.locks[host]:
             log = self.logs[host]
             while True:
                 now = time.monotonic()
+                if now < self.pause_until[host]:
+                    await asyncio.sleep(self.pause_until[host] - now)
+                    continue
                 while log and now - log[0] >= 1.02:
                     log.popleft()
-                if len(log) < self.rate:
+                if len(log) < self.rate_of(host):
                     log.append(now)
                     self.total[host] += 1
                     self.peak[host] = max(self.peak[host], len(log))

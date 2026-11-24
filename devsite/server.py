@@ -221,7 +221,14 @@ def hash_seed(s):
     return int(hashlib.md5(s.encode()).hexdigest()[:8], 16)
 
 
+THROTTLE = {"on": False}
+
+
 def make_handler(site: Site):
+    throttled_once = set()
+    lock = threading.Lock()
+    counter = {"n": 0}
+
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -257,6 +264,19 @@ def make_handler(site: Site):
                 return self.send(200, "<?xml version='1.0'?><urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>" +
                                  "".join(f"<url><loc>http://{s.host}{p}</loc><lastmod>{s.pages[p]['lastmod']}</lastmod></url>"
                                          for p in ps) + "</urlset>", "application/xml")
+            if THROTTLE["on"] and path != "/robots.txt":
+                with lock:
+                    counter["n"] += 1
+                    n = counter["n"]
+                if n % THROTTLE.get("every", 10):  # heavy throttling: most requests get 429 with a long Retry-After
+                    return self.send(429, "Too Many Requests", "text/plain", headers={"Retry-After": "60"})
+            if not s.rival and path.startswith("/products/home-lift-model-") and path.endswith("/") \
+                    and "reviews" not in path:
+                with lock:
+                    first = path not in throttled_once
+                    throttled_once.add(path)
+                if first:  # Shopify-style rate limiting: first request to each product page gets 429
+                    return self.send(429, "Too Many Requests", "text/plain", headers={"Retry-After": "1"})
             if path == "/":
                 return self.cond(s.home())
             if path == "/blog/":
@@ -318,6 +338,9 @@ def make_handler(site: Site):
                                      "a.innerHTML='<h1>'+d.h1+'</h1>'+d.paras.map(function(p){return '<p>'+p+'</p>'}).join('');"
                                      "r.appendChild(a);</script><script src='/static/app.js'></script>" + s.footer() + "</body></html>")
                 if path == "/static/app.js":
+                    if THROTTLE.get("slow_js"):
+                        import time as _t
+                        _t.sleep(200)  # a sub-resource that never answers in time
                     return self.send(200, "console.log('app');", "application/javascript")
                 if path == "/private-report/":
                     return self.send(200, s.page_html(path, s.pages[path]), headers={"X-Robots-Tag": "noindex, nofollow"})
@@ -348,7 +371,12 @@ def main():
     ap.add_argument("--port-rival", type=int, default=8002)
     ap.add_argument("--gold", default=None)
     ap.add_argument("--variant", type=int, default=0)
+    ap.add_argument("--slow-js", action="store_true", help="JS sub-resource hangs for 200 s (render hang test)")
+    ap.add_argument("--throttle", type=int, default=0, help="N: answer all but every N-th request with 429 (Retry-After: 60)")
     a = ap.parse_args()
+    THROTTLE["on"] = a.throttle > 0
+    THROTTLE["every"] = max(1, a.throttle)
+    THROTTLE["slow_js"] = a.slow_js
     t = Site("target", a.port_target, variant=a.variant)
     r = Site("rival", a.port_rival, rival=True)
     if a.gold:

@@ -69,3 +69,5 @@ Timing, memory and AI cost for the run are in `logs/run_stats.json`.
 * The crawler obeys `robots.txt` the way Google reads it and never sends more than 6 requests per second to one site.
 * Same input + same `--seed` gives byte-identical files in `report/`.
 * Measurement commands for every target are in `BENCHMARKS.md`, and design decisions are in `DECISIONS.md`.
+* `tools\run_tough_tests.bat` runs several hard real-site pairs in one go, and `tools/collect_results.py` zips their results.
+* Developers: `python -m pytest tests` runs the test suite. `python devsite/server.py` starts the synthetic test sites.

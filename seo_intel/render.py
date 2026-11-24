@@ -4,7 +4,7 @@ Decision without rendering everything first:
  1. Cheap raw-HTML signals per page (visible-text length, script count,
     SPA framework mount markers, <noscript> "enable JavaScript").
  2. Template probes (after the crawl, so the choice never depends on fetch order): for every
-    URL template (path with digits -> {n}) the PROBES_PER_TEMPLATE script-bearing pages with the
+    site section (path with the last segment -> '*') the PROBES_PER_TEMPLATE script-bearing pages with the
     lowest URL hash are rendered. If rendering adds > DIFF_THRESHOLD of the visible tokens, the
     template is JS-dependent and its other pages are rendered (hash order) within budget.
  3. Hard budget: renders <= RENDER_SHARE * pages fetched, enforced continuously
@@ -18,12 +18,20 @@ import asyncio
 import re
 from collections import defaultdict
 
-from .urlnorm import host_of, template
+from .urlnorm import host_of, section_template as template
 
 RENDER_SHARE = 0.15
 PROBES_PER_TEMPLATE = 2
 DIFF_THRESHOLD = 0.20
 TOK = re.compile(r"\w+", re.U)
+CACHE_MAX = 150 * 1024 * 1024
+TRACKERS = re.compile(r"google-analytics\.com|googletagmanager\.com|doubleclick\.net|googlesyndication\.com|"
+                      r"facebook\.(?:net|com)/(?:tr|signals|en_US/fbevents)|connect\.facebook\.net|hotjar\.com|"
+                      r"clarity\.ms|segment\.(?:io|com)|mixpanel\.com|intercom\.io|hubspot\.com|hs-scripts\.com|"
+                      r"hs-analytics\.net|linkedin\.com/px|snap\.licdn\.com|tiktok\.com/i18n/pixel|bat\.bing\.com|"
+                      r"newrelic\.com|nr-data\.net|sentry\.io|fullstory\.com|optimizely\.com|adroll\.com|"
+                      r"taboola\.com|outbrain\.com|criteo\.(?:com|net)|amazon-adsystem\.com|cookielaw\.org|"
+                      r"onetrust\.com|cookiebot\.com|youtube\.com/(?:embed|iframe_api)|vimeo\.com", re.I)
 
 
 def token_gain(raw_text: str, rendered_text: str) -> float:
@@ -58,8 +66,10 @@ class RenderPolicy:
 
 
 class Renderer:
-    def __init__(self, fetcher, robots_allowed, pages=2):
+    def __init__(self, fetcher, robots_allowed, pages=3):
         self.fetcher = fetcher
+        self.cache = {}          # sub-resource cache: the same JS bundle is fetched once, not per page
+        self.cache_bytes = 0
         self.robots_allowed = robots_allowed
         self.n = pages
         self.sem = asyncio.Semaphore(pages)
@@ -94,11 +104,17 @@ class Renderer:
         except Exception:
             pass
 
-    async def render(self, url: str, html: str, timeout_ms=10000):
-        """Return (rendered_html, js_navigation_target_or_None) or (None, None)."""
+    async def render(self, url: str, html: str, timeout_ms=10000, idle_ms=2500, hard_s=25.0):
+        """Return (rendered_html, js_navigation_target_or_None) or (None, None). Never runs longer than hard_s."""
         await self.start()
         if not self.available:
             return None, None
+        try:
+            return await asyncio.wait_for(self._render(url, html, timeout_ms, idle_ms), timeout=hard_s)
+        except (asyncio.TimeoutError, Exception):
+            return None, None
+
+    async def _render(self, url, html, timeout_ms, idle_ms):
         async with self.sem:
             ctx = await self._browser.new_context(user_agent="Mozilla/5.0 (compatible; seo-intel/0.1)",
                                                   java_script_enabled=True)
@@ -116,25 +132,34 @@ class Renderer:
                     nav["target"] = rurl
                     await route.abort()
                     return
-                if rtype in ("image", "media", "font", "stylesheet") or not rurl.startswith("http"):
+                if rtype in ("image", "media", "font", "stylesheet", "websocket", "manifest", "other") \
+                        or not rurl.startswith("http") or TRACKERS.search(rurl):
                     await route.abort()
                     return
                 if not self.robots_allowed(rurl):
                     await route.abort()
                     return
-                r = await self.fetcher.get_once(rurl, any_body=True)
-                if r.get("status") != 200:
-                    await route.abort()
+                hit = self.cache.get(rurl) if rtype == "script" else None
+                if hit is None and self.fetcher.limiter.is_paused(host_of(rurl)):
+                    await route.abort()  # host is throttling us: don't queue behind its back-off
                     return
-                ctype = r["headers"].get("content-type", "application/octet-stream")
-                await route.fulfill(status=200, body=r["body"], content_type=ctype)
+                if hit is None:
+                    r = await self.fetcher.get_once(rurl, any_body=True)
+                    if r.get("status") != 200:
+                        await route.abort()
+                        return
+                    hit = (r["body"], r["headers"].get("content-type", "application/octet-stream"))
+                    if rtype == "script" and self.cache_bytes + len(hit[0]) < CACHE_MAX:
+                        self.cache[rurl] = hit
+                        self.cache_bytes += len(hit[0])
+                await route.fulfill(status=200, body=hit[0], content_type=hit[1])
 
             await page.route("**/*", handle)
             out = None
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
                 try:
-                    await page.wait_for_load_state("networkidle", timeout=timeout_ms // 2)
+                    await page.wait_for_load_state("networkidle", timeout=idle_ms)
                 except Exception:
                     pass
                 out = await page.content()

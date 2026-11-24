@@ -2,7 +2,8 @@
 
 Claim kinds (all values are re-computed by code, never trusted):
   field        {url, field, value}        status, final_url, canonical, title, h1, meta_robots,
-                                          x_robots, lang, word_count, redirect_hops, soft404,
+                                          x_robots, lang, word_count, redirect_hops (3xx responses only),
+                                          redirect_leaves_site, soft404,
                                           canonical_target_status, intent
   graph        {url, metric, value}       pagerank_x1000 (4dp), click_depth, content_inlinks,
                                           content_outlinks, inlinks_to_redirect

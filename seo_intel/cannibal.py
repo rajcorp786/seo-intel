@@ -10,6 +10,9 @@ Healthy pairs excluded automatically:
   sub-page   - product/page + its own FAQ/reviews/specs/Q&A (child path with such a slug)
   hierarchy  - parent category + child (one URL path is an ancestor of the other)
   canonical  - one already canonicalises or redirects to the other (handled elsewhere)
+  entities   - same page type but different entities: after removing words common to many titles
+               on the site ("review", "statistics", "free", "tool"), the two titles share nothing
+               ("Ahrefs Review" vs "Serpstat Review")
 
 Severity (0-100), only signals available without Search Console:
   35 * topic_sim      cosine of topic vectors, rescaled from [SIM_MIN,1] to [0,1]
@@ -89,7 +92,22 @@ def _path(u):
     return urlsplit(u).path.rstrip("/") or "/"
 
 
-def healthy_reason(a, b, pa, pb):
+def common_title_words(pages, share=0.03, min_pages=5):
+    """Words that appear in many titles/H1s of the site (template words like 'review', 'statistics',
+    'free', 'tool'). What remains after removing them names the page's own entity/topic."""
+    from collections import Counter
+    df = Counter()
+    for p in pages:
+        df.update(kw(p))
+    lim = max(min_pages, share * max(1, len(pages)))
+    return {w for w, c in df.items() if c >= lim}
+
+
+def distinctive(p, common):
+    return kw(p) - common
+
+
+def healthy_reason(a, b, pa, pb, common=frozenset()):
     """pa/pb: page dicts. Returns reason string if the pair is legitimately similar."""
     hl_a = {h for _, h in pa["hreflang"]}
     hl_b = {h for _, h in pb["hreflang"]}
@@ -118,6 +136,11 @@ def healthy_reason(a, b, pa, pb):
         diff = {k for k in set(qa) | set(qb) if qa.get(k) != qb.get(k)}
         if diff and all(k.lower() in ("tab", "view", "section", "sort", "order") for k in diff):
             return "same page, different view parameter"
+    da, db = distinctive(pa, common), distinctive(pb, common)
+    if da and db and not (da & db):
+        # e.g. "Ahrefs Review" vs "Serpstat Review", "Claude statistics" vs "Signal statistics":
+        # same page type, different entities -> not competing for one query
+        return "same page type, different entities"
     return None
 
 
@@ -132,6 +155,7 @@ def jac(a, b):
 def find_groups(pages, Z, minsigs, intents, graphinfo, anchors_by_url, seed, dup_pairs=()):
     """pages: list of page dicts for ONE site (index aligned with Z rows given in p['zi'])."""
     by_url = {p["url"]: p for p in pages}
+    common = common_title_words(pages)
     idxs = [p["zi"] for p in pages]
     zi2url = {p["zi"]: p["url"] for p in pages}
     cand = ivf_candidates(Z, idxs, seed)
@@ -150,7 +174,7 @@ def find_groups(pages, Z, minsigs, intents, graphinfo, anchors_by_url, seed, dup
             ov = float(np.mean(minsigs[a] == minsigs[b]))
         if sim < SIM_MIN and ov < 0.5:
             continue
-        hr = healthy_reason(a, b, pa, pb)
+        hr = None if ov >= 0.7 else healthy_reason(a, b, pa, pb, common)  # true duplicates are never "healthy"
         if hr:
             excluded[hr] += 1
             excluded_examples.setdefault(hr, (a, b))
