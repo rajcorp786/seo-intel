@@ -35,7 +35,7 @@ MIN_COHESION = 0.35
 MISS_MAX_PAGES = 1
 MISS_WORD_SHARE = 0.2
 MISS_MAX_SIM = 0.55
-FAMILY_SIM = 0.75     # series whose pages say the same thing (centroid cosine) ...
+FAMILY_SIM = 0.50     # series whose pages say the same thing (centroid cosine) ...
 FAMILY_SHARED = 3     # ... about the same entities (>= 3 common endings) are ONE family of pages
 SERIES_MIN = 8        # pages sharing a path prefix
 SERIES_SUFFIX = 3     # ... and differing only in the last 1-3 words (the entity)

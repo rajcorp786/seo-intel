@@ -138,6 +138,10 @@ Probes now group by site section (last path segment → `*`).
 cosine ≥ 0.75 are now one gap ("N URL patterns, e.g. …"); different topics with the same endings (cosine
 below 0.75) stay apart (unit test).
 
+**Family threshold calibrated (v1.0.6).** With 0.75, 22 series stayed apart; the report's
+`closest_unmerged_series` showed the keyword variants at cosine 0.51–0.73, while different topics on the dev
+site are at ≤ 0.04. The threshold is now 0.50.
+
 
 **Intent signals (v1.0.1).**
 * *Failed:* the navigational title rule `^(home|about|…)\b` matched "Home lift price basics", so 7 blog
@@ -189,6 +193,11 @@ below 0.75) stay apart (unit test).
   average, **91.41%** in the worst case.
 * *Now:* the estimate shortlists the 12 best candidates, and an exact PageRank recompute picks among them,
   K times. **99.55%** on average, **95.46%** worst case (`link_plan.json → greedy_vs_optimal_small_graphs`).
+
+**Too strict anchors (v1.0.5 → v1.0.6, real run).**
+* *Failed:* require one of the target's two rarest title words in every exact anchor. On hybonelevators.com
+  only 3 links were left (priority PageRank ×1000 39.2 → 42.9, before 23 links reached 121).
+* *Now:* such anchors are preferred, and the same anchor text may point at the same page at most twice.
 
 **Generic anchors (v1.0.4, real run).**
 * *Failed:* "distinctive" meant "not common in the site's titles". On hybonelevators.com that still allowed

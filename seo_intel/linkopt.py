@@ -25,6 +25,7 @@ from .graph import DAMPING, pagerank
 from .textnorm import DEV, STOP, sentences
 
 REL_MIN = 0.40
+ANCHOR_REPEAT = 2     # the same anchor text may point at the same page at most twice
 ANCHOR_DF_MAX = 0.25  # a distinctive anchor word appears in the body of at most 25% of the site's pages
 MAX_PER_SOURCE = 3
 TOP_M = 12

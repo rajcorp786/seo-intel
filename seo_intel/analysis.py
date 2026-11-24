@@ -529,6 +529,7 @@ def stage_links(ctx):
         per_target[t] = (phrases, title_words, [])
     # words that appear in the body text of many pages are generic ("spare parts", "waiting time" are in
     # half the site's articles): they cannot be what tells a reader where a link goes
+    key_words = {}
     want = set().union(*(v[1] for v in per_target.values())) if per_target else set()
     df = dict.fromkeys(want, 0)
     n_docs = 0
@@ -543,8 +544,8 @@ def stage_links(ctx):
         # the anchor must carry what the page is ABOUT: one of its two rarest title words (e.g. 'hospital'
         # for 'Hospital lift planning'), so "waiting time" cannot point at a hospital page
         ranked = sorted((w for w in keep if not w.isdigit()), key=lambda w: (df.get(w, 0), w))[:2]
-        key = set(ranked) | {w for w in keep if w.isdigit()}
-        per_target[t] = (phrases, key, full)
+        key_words[t] = set(ranked) | {w for w in keep if w.isdigit()}
+        per_target[t] = (phrases, keep, full)
         for seq in phrases:
             for L in range(2, 7):
                 for i in range(len(seq) - L + 1):
@@ -593,10 +594,18 @@ def stage_links(ctx):
             c = (g.idx[s], g.idx[t], meta)
             key = (s, fa[0])  # one sentence carries at most one new link: keep the most relevant target
             old = best_per_sentence.get(key)
-            rank = lambda m: (m["anchor_mode"] != "exact", -m["relevance"], m["target"])
+            c[2]["names_target"] = bool(set(linkopt.TOKEN_I.findall(c[2]["anchor"].lower())) & key_words.get(t, set()))
+            rank = lambda m: (m["anchor_mode"] != "exact", not m["names_target"], -m["relevance"], m["target"])
             if old is None or rank(c[2]) < rank(old[2]):
                 best_per_sentence[key] = c
     cands = [best_per_sentence[k] for k in sorted(best_per_sentence)]
+    # the same anchor text to the same page at most ANCHOR_REPEAT times: a varied anchor profile, not five
+    # identical exact-match links. Anchors that contain the page's key word are kept first.
+    by_anchor = {}
+    for c in sorted(cands, key=lambda c: (not c[2]["names_target"], -c[2]["relevance"], c[2]["source"])):
+        norm = " ".join(linkopt.TOKEN_I.findall(c[2]["anchor"].lower()))  # "waiting-time" == "waiting time"
+        by_anchor.setdefault((c[2]["target"], norm), []).append(c)
+    cands = sorted((c for v in by_anchor.values() for c in v[:linkopt.ANCHOR_REPEAT]), key=lambda c: (c[0], c[1]))
     cands.sort(key=lambda c: (c[0], c[1]))
     base_pr = g.pagerank()
     per_target = max(3, cfg.k // 5)  # no page takes more than a fifth of the budget (see DECISIONS.md)

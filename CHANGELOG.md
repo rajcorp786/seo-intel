@@ -2,6 +2,13 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.6 (2026-11-24): calibrated on the real run
+| Area | What changed | Why (v1.0.5 run, hybonelevators.com vs eliteelevators.com) |
+|---|---|---|
+| Gaps | Family threshold 0.75 → 0.50 | the closest unmerged keyword variants scored 0.51–0.73 (e.g. home-lifts-in / lift-for-homes-in 0.73); different topics on the dev site score ≤ 0.04 |
+| Anchors | The key-word rule became a preference; instead the same anchor text may point at the same page at most twice | the strict rule left only 3 links (PR ×1000 39.2 → 42.9); the real problem was 5 identical "waiting time" links |
+| Errors | A report file open in Excel gives a clear message instead of a traceback | real run on Windows |
+
 ## 1.0.5 (2026-11-24): anchors must name the target
 Found by the v1.0.4 run on hybonelevators.com vs eliteelevators.com.
 

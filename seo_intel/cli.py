@@ -185,7 +185,12 @@ def main(argv=None):
     actions, claims, rejections, trace = agent.run()
     timings["agent_s"] = round(time.monotonic() - t2, 1)
     from .report import write_all
-    write_all(ctx, out, actions, claims, rejections)
+    try:
+        write_all(ctx, out, actions, claims, rejections)
+    except PermissionError as e:
+        log(f"ERROR: cannot write {e.filename}: the file is open in another program (e.g. Excel). "
+            f"Close it and run the same command again with --skip-crawl (the crawl is kept).")
+        raise SystemExit(2)
     total = time.monotonic() - t0
     if first_run:
         for s in ("target", "competitor"):
