@@ -24,6 +24,7 @@ class HostLimiter:
     def __init__(self, rate: float = 6.0):
         self.rate = int(rate)
         self.rates = {}                     # per-host current rate (lowered after 429/503)
+        self.ceiling = {}                   # per-host: the rate that got throttled (never tried again)
         self.pause_until = defaultdict(float)
         self.last_penalty = defaultdict(float)
         self.logs = defaultdict(deque)
@@ -38,7 +39,9 @@ class HostLimiter:
         self.throttled[host] += 1
         if now - self.last_penalty[host] < 5 and self.pause_until[host] > now:
             return  # many in-flight requests hit the same 429 burst: count it once
-        self.rates[host] = max(1, self.rate_of(host) // 2)
+        cur = self.rate_of(host)
+        self.ceiling[host] = min(self.ceiling.get(host, self.rate), cur)
+        self.rates[host] = max(1, cur // 2)
         wait = 10.0
         if retry_after:
             try:
@@ -54,7 +57,10 @@ class HostLimiter:
     def rate_of(self, host):
         r = self.rates.get(host, self.rate)
         # recover one step per 30 s without a penalty
-        if r < self.rate and time.monotonic() - self.last_penalty[host] > 30:
+        # ... but only up to one step below the rate the server rejected: the crawl settles on a rate
+        # the site accepts instead of hitting the same limit again and again
+        top = max(1, self.ceiling[host] - 1) if host in self.ceiling else self.rate
+        if r < top and time.monotonic() - self.last_penalty[host] > 30:
             r += 1
             self.rates[host] = r
             self.last_penalty[host] = time.monotonic()

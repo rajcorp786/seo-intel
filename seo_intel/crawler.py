@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import heapq
 import json
+import os
 import zlib
 import time
 from datetime import datetime, timezone
@@ -25,6 +26,8 @@ MAX_RETRIES = 4
 PAGE_EFFICIENCY = 0.75
 HUB_SHARE = 2          # % of known pages (by in-links) re-checked on every incremental run
 HUB_MIN = 10
+TRANCHE_FIRST = int(os.environ.get("SEO_INTEL_TRANCHE_FIRST", 200))    # the crawl grows in fixed steps (200, 300, 450 ... pages); see extend_tranche
+TRANCHE_GROWTH = 1.5
 RENDER_AUDIT_N = 4     # renders kept for the automatic render-recall audit
 REFRESH_ROTATION = 20  # 1 in 20 other pages re-checked per incremental run (each page within ~20 runs)
 
@@ -256,6 +259,8 @@ class SiteCrawl:
         workers = self.cfg.concurrency
         pending = set()
         level = None
+        self.t_frontier = time.monotonic()
+        self.tranche_cap = min(self.page_cap, TRANCHE_FIRST)
         while self.deadline_ok():
             qmin = st.min_queued_depth(self.role, self.run)
             if not pending:
@@ -266,7 +271,7 @@ class SiteCrawl:
                     break
                 level = qmin
             done_pages = st.count("SELECT COUNT(*) FROM pages WHERE site=? AND run=?", (self.role, self.run))
-            cap_left = self.page_cap - done_pages - 2 * len(pending)  # a redirect can add 2 rows
+            cap_left = self.tranche_cap - done_pages - 2 * len(pending)
             room = min(workers - len(pending), cap_left)
             if room > 0 and qmin == level:
                 rows = st.next_batch(self.role, room * 4 + 16, self.run, self.inflight, depth=level)
@@ -293,6 +298,10 @@ class SiteCrawl:
             if not pending:
                 if cap_left > 0 and qmin == level and self.traps.force_judgement():
                     continue  # every sample of a waiting template is done: verdict taken, go on
+                if cap_left <= 0 and qmin is not None and self.tranche_cap < self.page_cap:
+                    if self.extend_tranche(done_pages):
+                        continue
+                    break
                 if cap_left <= 0 or qmin is None or qmin == level:
                     break  # page cap reached, or nothing dispatchable at this level
                 continue
@@ -311,6 +320,25 @@ class SiteCrawl:
             for t in stragglers:
                 t.cancel()
             await asyncio.wait(stragglers, timeout=10)
+
+    def extend_tranche(self, done_pages):
+        """The crawl stops only at fixed page counts (200, 300, 450 ...), never wherever the clock happens
+        to cut it: at each step it continues only if the next step clearly fits in the time left (1.6x
+        the time it should need, plus a reserve for rendering). On a slow or throttling site two runs
+        therefore stop at the same page count and fetch the same pages, instead of 'whatever was done
+        when the deadline hit'."""
+        now = time.monotonic()
+        elapsed = max(1.0, now - self.t_frontier)
+        nxt = min(self.page_cap, max(done_pages + 1, int(self.tranche_cap * TRANCHE_GROWTH)))
+        need = 1.6 * elapsed * (nxt - done_pages) / max(1, done_pages)
+        reserve = max(20.0, 0.12 * (self.deadline - self.t_frontier))
+        if self.deadline - now - reserve >= need:
+            self.tranche_cap = nxt
+            return True
+        self.log(f"[{self.role}] stopping at {done_pages} pages: the next step ({nxt}) does not safely fit "
+                 f"in the time left ({self.deadline - now:.0f}s; {elapsed:.0f}s used so far)")
+        self.store.stat(self.role, "stopped_at_step", done_pages)
+        return False
 
     async def level_boundary(self):
         """End of a BFS level: render the queued pages in a fixed order within the 15% budget."""
@@ -449,7 +477,7 @@ class SiteCrawl:
             if isinstance(status, int) and final != url and self.same_site(final):
                 # the target is fetched in its own turn of the fixed crawl order (storing it here would
                 # depend on which task happened to finish first)
-                self.enqueue([(final, depth, 90.0, None)], url)
+                self.enqueue([(final, (depth or 0) + 1, 90.0, None)], url)  # next level: a level's URL set is fixed
             return
         row["status"] = status if isinstance(status, int) else None
         if status is None or not isinstance(status, int):
@@ -512,7 +540,7 @@ class SiteCrawl:
             items = [(l[1], d, 100.0 - 10 * d, None) for l in links if l[3] != "nofollow"]
         for extra in (row.get("canonical"), row.get("meta_refresh"), row.get("js_redirect")):
             if extra:
-                items.append((extra, depth or 0, 95.0, None))
+                items.append((extra, d, 95.0, None))
         for _, h in json.loads(row.get("hreflang") or "[]"):
             if h:
                 items.append((h, d, 70.0, None))
@@ -526,29 +554,39 @@ class SiteCrawl:
     async def render_audit(self):
         """Automatic render-recall check: render a fixed hash-ordered sample of script-bearing pages the
         policy chose NOT to render. A sampled page whose text grows by > DIFF_THRESHOLD is a missed render;
-        the miss rate on the sample estimates how many such pages the rest of the site holds."""
+        the miss rate on the sample estimates how many such pages the rest of the site holds.
+        Resumable: pages audited before a crash stay in the sample and are not rendered twice."""
         if not self.renderer.available:
             return
         from .render import DIFF_THRESHOLD
-        pool = sorted((u for (u,) in self.store.db.execute(
-            "SELECT url FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND rendered=0 AND scripts>0 "
-            "AND run=? AND (unchanged=0 OR ?=0)", (self.role, self.run, int(self.mode == "incremental")))), key=sha)
         st = self.store
-        if self.mode == "incremental" and not pool:
+        inc = int(self.mode == "incremental")
+        rows = st.db.execute(
+            "SELECT url, rendered, render_reason FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND "
+            "scripts>0 AND run=? AND (unchanged=0 OR ?=0) AND (rendered=0 OR render_reason LIKE 'audit:%')",
+            (self.role, self.run, inc)).fetchall()
+        if inc and not rows:
             return  # nothing new to audit: the last run's audit still describes the stored pages
-        st.stat(self.role, "render_audit_pool", len(pool))
-        sample = pool[:max(0, min(RENDER_AUDIT_N, self.render_budget(audit=True)))]
-        missed = 0
+        done_before = {r[0] for r in rows if r[1]}
+        pool = sorted((r[0] for r in rows), key=sha)
+        n = max(len(done_before), min(RENDER_AUDIT_N, self.render_budget(audit=True) + len(done_before)))
+        sample = pool[:max(0, n)]
+        todo = [u for u in sample if u not in done_before]
         n_par = max(1, self.renderer.n)
-        done = 0
-        for i in range(0, len(sample), n_par):
+        for i in range(0, len(todo), n_par):
             if not self.deadline_ok():
                 break
-            part = sample[i:i + n_par]
-            gains = await asyncio.gather(*(self.render_one(u, "audit") for u in part))
-            done += len(part)
-            missed += sum(1 for g in gains if g is not None and g > DIFF_THRESHOLD)
-        st.stat(self.role, "render_audit_sampled", done)
+            await asyncio.gather(*(self.render_one(u, "audit") for u in todo[i:i + n_par]))
+        sampled = missed = 0
+        for (rr,) in st.db.execute("SELECT render_reason FROM pages WHERE site=? AND run=? AND rendered=1 AND "
+                                   "render_reason LIKE 'audit:%'", (self.role, self.run)):
+            sampled += 1
+            try:
+                missed += float(rr.rsplit("gain=", 1)[1]) > DIFF_THRESHOLD
+            except (IndexError, ValueError):
+                pass
+        st.stat(self.role, "render_audit_pool", len(pool))
+        st.stat(self.role, "render_audit_sampled", sampled)
         st.stat(self.role, "render_audit_missed", missed)
 
     async def drain_renders(self, final=False):

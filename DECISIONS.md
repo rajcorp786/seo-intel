@@ -34,6 +34,17 @@ Everything below was measured during development on the synthetic dev pair in `d
   session-id records and trap samples come out exactly as from a fetch. Result: incremental output equals a
   fresh crawl except `change_report.json`; all four planted next-day changes are detected.
 
+**Running out of time (v1.0.2, found on a real throttling site).**
+* *Failed:* crawl until the clock says stop. On daffodilsw.com the site answered 429/503 57 times, the
+  rate kept climbing back to the rejected rate, and the crawl was cut at 929 pages with 1,528 URLs left and
+  no time to render. Where the clock cuts is different in every run, so outputs would differ.
+* *Now:* (1) the rate settles one step below the rate the server rejected; (2) the crawl grows in fixed
+  steps (200, 300, 450 … pages) and continues to the next step only if 1.6× its expected time plus a render
+  reserve fits. A slow site therefore ends at a fixed page count. Slow dev site (4 s/request + jitter, tight
+  budget): **3 of 3** runs byte-identical, each stopping at the same step.
+* *Limit that remains:* if two runs differ so much in speed that one fits a step and the other does not,
+  they stop at different steps. The hard deadline is still enforced, so time limits hold either way.
+
 **Facet explosions.**
 * *Failed:* allow 25 query combinations per path, then block. Which 25 got in depended on the async fetch
   order, so two runs could crawl different pages.

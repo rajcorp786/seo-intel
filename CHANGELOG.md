@@ -2,6 +2,16 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.2 (2026-11-24): slow and throttling sites
+Found by a real run (daffodilsw.com vs capitalnumbers.com): 57 "slow down" (429/503) answers, the target crawl
+was cut by the clock at 929 pages with 1,528 URLs left, so a second run could have ended elsewhere.
+
+| Area | What changed | How it was checked |
+|---|---|---|
+| Repeatability on slow sites | The crawl grows in fixed steps (200, 300, 450 … pages) and stops only at a step, when the next one does not safely fit in the time left; redirect/canonical targets go to the next link level | slow dev site (4 s per request, random jitter, tight budget): 3 of 3 runs byte-identical; crash + resume at 4 kill points identical |
+| Throttling | After a 429/503 the crawler never returns to the rate that was rejected (settles one step below) | unit test |
+| Render audit | Resumable after a crash | crash test above |
+
 ## 1.0.1 (2026-11-24): toward the full brief
 | Area | What changed | How it was checked |
 |---|---|---|

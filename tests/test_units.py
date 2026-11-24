@@ -213,3 +213,14 @@ def test_anchor_never_shared_between_sibling_pages_and_widen_fallback():
     r = linkopt.find_anchor(text, phrases, {"2"}, banned=bad, rewrite_phrases=[("home", "lift", "model", "2")])
     assert r[1] == "home lift" and r[3] == "home lift model 2"
     assert r[4] == "Every home lift model 2 needs a pit and a yearly service plan here."
+
+
+def test_limiter_settles_below_the_throttled_rate():
+    from seo_intel.fetcher import HostLimiter
+    lim = HostLimiter(6)
+    lim.penalize("h")                      # throttled at 6 -> 3
+    assert lim.rate_of("h") == 3
+    for _ in range(10):                    # long quiet period: recovers, but never back to 6
+        lim.last_penalty["h"] -= 31
+        lim.rate_of("h")
+    assert lim.rate_of("h") == 5
