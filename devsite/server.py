@@ -13,6 +13,7 @@ import hashlib
 import json
 import random
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -278,6 +279,8 @@ def make_handler(site: Site):
                 return self.send(200, "<?xml version='1.0'?><urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>" +
                                  "".join(f"<url><loc>http://{s.host}{p}</loc><lastmod>{s.pages[p]['lastmod']}</lastmod></url>"
                                          for p in ps) + "</urlset>", "application/xml")
+            if THROTTLE.get("delay"):  # a slow site: fixed latency per request
+                time.sleep(THROTTLE["delay"] / 1000)
             if THROTTLE.get("jitter"):  # real-internet-like random latency (0-300 ms)
                 import time as _t
                 _t.sleep(random.random() * 0.3)
@@ -388,6 +391,7 @@ def main():
     ap.add_argument("--port-rival", type=int, default=8002)
     ap.add_argument("--gold", default=None)
     ap.add_argument("--variant", type=int, default=0)
+    ap.add_argument("--delay", type=int, default=0, help="fixed latency in ms per request (slow-site test)")
     ap.add_argument("--jitter", action="store_true", help="random 0-300 ms latency per request")
     ap.add_argument("--slow-js", action="store_true", help="JS sub-resource hangs for 200 s (render hang test)")
     ap.add_argument("--throttle", type=int, default=0, help="N: answer all but every N-th request with 429 (Retry-After: 60)")
@@ -396,6 +400,7 @@ def main():
     THROTTLE["every"] = max(1, a.throttle)
     THROTTLE["slow_js"] = a.slow_js
     THROTTLE["jitter"] = a.jitter
+    THROTTLE["delay"] = a.delay
     t = Site("target", a.port_target, variant=a.variant)
     r = Site("rival", a.port_rival, rival=True)
     if a.gold:

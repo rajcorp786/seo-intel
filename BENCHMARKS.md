@@ -31,6 +31,7 @@ Machine for the measured rows: 2-core cloud container, 8 GB RAM, Python 3.13.
 | Max requests in any 1 s window per host | ≤ 6 | 6 / 6 | – | 6 / 6 (r02 run) | 6 / 6 (r02 run) |
 | Robots: Google parser tests | pass | 23/23 pass | – | – | – |
 | Repeatability (2 fresh runs) | identical | 12/12 files identical, also with 429 responses and 0–300 ms random server latency (`server.py --jitter`) | – | not measured (live sites change between runs) | not measured |
+| Repeatability when time runs out (slow site) | identical | 3/3 runs identical (4 s/request + jitter, 1.5 min budget; crawl stops at a fixed step) | – | not measured | not measured |
 | Crash + resume = uninterrupted | identical | 4/4 kill points identical | – | – | – |
 | Incremental re-run | ≤ 10% of first | 8.2 s vs 48.4 s = 17% (see note); output identical to a fresh crawl except `change_report.json` | – | not measured | not measured |
 
@@ -139,3 +140,18 @@ SEO_INTEL_ABLATE_TEMPLATE=1 seo-intel SITE --competitor COMP --out runA_notpl --
 | ≤ 8,000 input tokens per call | enforced in `llm.py` (call refused above the cap) | – |
 | Two runs identical (temperature 0 + response cache) | identical (no-key path) | `seo-intel-eval determinism` |
 | Judge: Cohen's kappa on 40 own labels + a judge-wrong case | not done (needs 40 own labels) | `seo-intel-eval label-template --out runA`, label 40 rows, then `seo-intel-eval judge --out runA --labels labels.csv` |
+
+## Real pair 3 (v1.0.1 run, 30-minute budget): daffodilsw.com vs capitalnumbers.com
+
+| | Value |
+|---|---|
+| Total time | 1,527 s of 1,800 s |
+| Peak RAM | 876 MB |
+| LLM cost | $0 (no key set) |
+| Max requests in any 1 s window | 6 on both hosts |
+| HTML pages | target 929 (crawl cut by the deadline after 57 throttle responses; 1,528 URLs left), competitor 1,698 (complete) |
+| Rendered share | target 0% (no time left), competitor 1.7% (29); render audit competitor: 0 of 4 missed |
+| Traps | target: 15 HubSpot tracking-parameter patterns avoided; competitor: facet + template trap on `/book-an-appointment`, trap budget 0.67% |
+| Found | target: 2 redirect loops (www ↔ insights), 12 redirect chains, 1 soft 404; competitor: 1 loop, 1 chain, 1 canonical → redirect |
+| Claims | 299 verified, 0 rejected |
+| Repeatability | not measured on this pair. The deadline cut seen here is what v1.0.2 changes (see DECISIONS.md, Part A) |
