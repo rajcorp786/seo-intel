@@ -224,3 +224,14 @@ def test_limiter_settles_below_the_throttled_rate():
         lim.last_penalty["h"] -= 31
         lim.rate_of("h")
     assert lim.rate_of("h") == 5
+
+
+def test_url_series_groups_one_page_per_place_templates():
+    from seo_intel.gaps import url_series
+    cities = ["agra", "ajmer", "new-delhi", "pune", "surat", "kota", "goa", "jammu-and-kashmir", "mysore"]
+    urls = [f"https://c.com/home-lifts-in-{c}/" for c in cities] + \
+           [f"https://c.com/blog/{w}-guide-to-{v}-lift-maintenance-costs/" for w in ("a", "the", "our")
+            for v in ("home", "goods", "car", "glass")] + ["https://c.com/about/"]
+    s = url_series(urls)
+    assert all(s[u] == ("home", "lifts", "in") for u in urls[:9])
+    assert all(s[u] is None for u in urls[9:])

@@ -125,6 +125,15 @@ Probes now group by site section (last path segment → `*`).
 
 ## Part C — Cannibalization & gaps
 
+**Gaps on sites with one page per city (v1.0.3, real run).**
+* *Failed:* topic-cluster all competitor pages. eliteelevators.com has ~1,350 pages built from ~27 templates
+  ("home lifts in <city>", "stairlifts in <city>" …). K-means split them by city, so the report listed
+  **48** gaps whose topic terms were city names (bathinda, amritsar …): one finding repeated 48 times.
+* *Now:* URL series are found first (a path prefix of ≥ 2 words shared by ≥ 8 pages that differ only in the
+  last 1–3 words). Each series is one gap candidate; the remaining pages are clustered by topic. On the same
+  1,359 URLs this gives **27** series (home-elevators-in 72 pages, stairlifts-in 58 …) and 15 other pages.
+
+
 **Intent signals (v1.0.1).**
 * *Failed:* the navigational title rule `^(home|about|…)\b` matched "Home lift price basics", so 7 blog
   posts were labelled navigational. The link-density signal was always 0 (never computed).
@@ -175,6 +184,12 @@ Probes now group by site section (last path segment → `*`).
   average, **91.41%** in the worst case.
 * *Now:* the estimate shortlists the 12 best candidates, and an exact PageRank recompute picks among them,
   K times. **99.55%** on average, **95.46%** worst case (`link_plan.json → greedy_vs_optimal_small_graphs`).
+
+**One page must not take the whole budget (v1.0.3, real run).**
+* *Failed:* maximise total priority PageRank with only the per-source limit. On hybonelevators.com 27 of 33
+  links went to one page, each with the anchor "spare parts" (its PageRank ×1000 went 3.9 → 86.1, the other
+  nine pages barely moved). Mathematically best, but 27 identical exact-match anchors look manipulative.
+* *Now:* at most K/5 links (min 3) per target page; paginated listings and archives are not auto-priority.
 
 **Anchors that name only the target (v1.0.1).**
 * *Failed (3rd version):* "home lift" was proposed as the anchor to 5 different product pages, because every

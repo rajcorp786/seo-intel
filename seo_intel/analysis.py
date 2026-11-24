@@ -1,6 +1,7 @@
 """Runs Parts B-D over the crawl store and exposes a verification Context for Part E."""
 from __future__ import annotations
 
+import re
 import json
 from urllib.parse import urlsplit
 
@@ -459,6 +460,10 @@ def stage_gaps(ctx):
     ctx.results["gaps"] = summary | {"gaps": len(gl)}
 
 
+# paginated listings and archive pages are never pages to push with new links
+_LISTING = re.compile(r"/(page/)?\d+/?$|[?&](page|paged|p)=\d+|/(category|tag|author|archive)s?/", re.I)
+
+
 def choose_priority(ctx, n=10):
     """Default priority pages when none are supplied: commercial/transactional target pages
     with substantial content and below-median internal PageRank."""
@@ -467,14 +472,14 @@ def choose_priority(ctx, n=10):
     med = float(np.median(prs)) if prs else 0
     for u, (it, m, _) in sorted(ctx.intents.items()):
         p = ctx.page(u)
-        if p["site"] != "target" or u not in ctx.graphinfo:
+        if p["site"] != "target" or u not in ctx.graphinfo or _LISTING.search(u):
             continue
         if it in ("commercial", "transactional") and (p["word_count"] or 0) >= 150 and ctx.graphinfo[u]["pagerank"] <= med:
             cands.append(((p["word_count"] or 0), u))
     if len(cands) < n:
         for u, (it, m, _) in sorted(ctx.intents.items()):
             p = ctx.page(u)
-            if p["site"] == "target" and u in ctx.graphinfo and it == "informational" and (p["word_count"] or 0) >= 300 \
+            if p["site"] == "target" and u in ctx.graphinfo and not _LISTING.search(u) and it == "informational" and (p["word_count"] or 0) >= 300 \
                     and ctx.graphinfo[u]["pagerank"] <= med:
                 cands.append(((p["word_count"] or 0) / 2, u))
     cands.sort(key=lambda x: (-x[0], x[1]))
@@ -576,7 +581,8 @@ def stage_links(ctx):
     cands = [best_per_sentence[k] for k in sorted(best_per_sentence)]
     cands.sort(key=lambda c: (c[0], c[1]))
     base_pr = g.pagerank()
-    chosen, Wn = linkopt.greedy(g.W, pri_idx, cands, cfg.k)
+    per_target = max(3, cfg.k // 5)  # no page takes more than a fifth of the budget (see DECISIONS.md)
+    chosen, Wn = linkopt.greedy(g.W, pri_idx, cands, cfg.k, max_per_target=per_target)
     after = pagerank(Wn)
     # proof: rebuild from scratch with the chosen links and recompute
     W2 = g.matrix([(c[0], c[1]) for c in chosen])
@@ -588,6 +594,7 @@ def stage_links(ctx):
                 "pagerank_x1000_after_predicted": round(float(after[g.idx[u]]) * 1000, 4),
                 "pagerank_x1000_after_recomputed": round(float(after2[g.idx[u]]) * 1000, 4)} for u in pri]
     ctx.plan = {"priority_urls": pri, "k": cfg.k, "max_per_source": linkopt.MAX_PER_SOURCE,
+                "max_per_target": per_target,
                 "candidates": len(cands), "links": links,
                 "total_before_x1000": round(float(base_pr[pri_idx].sum()) * 1000, 4),
                 "total_after_predicted_x1000": round(float(after[pri_idx].sum()) * 1000, 4),
