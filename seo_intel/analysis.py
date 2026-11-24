@@ -540,7 +540,11 @@ def stage_links(ctx):
     lim = max(3, linkopt.ANCHOR_DF_MAX * n_docs)
     for t, (phrases, title_words, full) in list(per_target.items()):
         keep = {w for w in title_words if w.isdigit() or df.get(w, 0) <= lim}
-        per_target[t] = (phrases, keep, full)
+        # the anchor must carry what the page is ABOUT: one of its two rarest title words (e.g. 'hospital'
+        # for 'Hospital lift planning'), so "waiting time" cannot point at a hospital page
+        ranked = sorted((w for w in keep if not w.isdigit()), key=lambda w: (df.get(w, 0), w))[:2]
+        key = set(ranked) | {w for w in keep if w.isdigit()}
+        per_target[t] = (phrases, key, full)
         for seq in phrases:
             for L in range(2, 7):
                 for i in range(len(seq) - L + 1):

@@ -95,6 +95,15 @@ def _merge_families(groups, series, Z):
     fam = defaultdict(list)
     for g in keys:
         fam[find(g)].append(g)
+    # report the closest pairs that were NOT merged, so the thresholds can be checked on real sites
+    near = []
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            if find(a) != find(b):
+                near.append((round(float(cents[a] @ cents[b]), 4), len(ends[a] & ends[b]),
+                             "-".join(a[1]), "-".join(b[1])))
+    near.sort(key=lambda x: (-x[0], x[2], x[3]))
+    _merge_families.last_near = [list(x) for x in near[:15]]
     out = {g: v for g, v in groups.items() if g[0] != "series"}
     families = 0
     for root, members in sorted(fam.items()):
@@ -131,6 +140,7 @@ def find_gaps(Z, rows, space, seed, pr_share):
     n_series = sum(1 for g in groups if g[0] == "series")
     summary = {"k": k, "page_series": n_series, "clusters_with_competitor_depth": 0,
                "series_families": families,
+               "closest_unmerged_series": getattr(_merge_families, "last_near", []),
                "method": "competitor URL series (merged into families of keyword variants) + topic clusters "
                          "of the remaining pages, in the shared space"}
     ordered = sorted(groups, key=lambda g: (g[0] != "topic", g[1]))

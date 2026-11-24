@@ -204,6 +204,9 @@ def anchor_ok(g, whole, title_words):
     return any(x in title_words for x in t)
 
 
+LIST_PUNCT = re.compile(r"[,;:/()\[\]|]")
+
+
 def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_heads=(), banned=frozenset(),
                 rewrite_phrases=()):
     """Return (sentence, anchor, score) or None.
@@ -238,7 +241,8 @@ def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_hea
             for i in range(len(toks) - L + 1):
                 g = toks[i:i + L]
                 words = [x for x in g if x not in STOP and not x.isdigit() and len(x) >= 2]
-                if tuple(g) in grams and len(words) >= 2 and anchor_ok(g, whole, title_words):
+                if tuple(g) in grams and len(words) >= 2 and anchor_ok(g, whole, title_words) \
+                        and not LIST_PUNCT.search(sent[ms[i].start():ms[i + L - 1].end()]):
                     cand = (ms[i].start(), ms[i + L - 1].end(), len(words))
                     break
             if cand:

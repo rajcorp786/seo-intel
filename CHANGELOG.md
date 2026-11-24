@@ -2,6 +2,14 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.5 (2026-11-24): anchors must name the target
+Found by the v1.0.4 run on hybonelevators.com vs eliteelevators.com.
+
+| Area | What changed | Why |
+|---|---|---|
+| Anchors | An exact anchor must contain one of the target's two rarest title words; no commas/brackets inside | "waiting time" ×5 pointed at the hospital-lift page; "quality, parts" |
+| Gaps | `summary.closest_unmerged_series` lists the most similar series pairs that were not merged | to check the family threshold (cosine 0.75) on real sites; v1.0.4 merged 4 families, 22 series remain |
+
 ## 1.0.4 (2026-11-24): anchors and gap families
 Found by the v1.0.3 run on hybonelevators.com vs eliteelevators.com.
 
