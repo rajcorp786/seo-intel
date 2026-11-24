@@ -156,3 +156,15 @@ def test_site_scope():
     assert site_scope("example.co.in") == "example.co.in"
     assert site_scope("docs.djangoproject.com") == "docs.djangoproject.com"
     assert site_scope("www.docs.example.com") == "docs.example.com"
+
+
+def test_template_gate_no_deadlock_on_retries():
+    t = TrapDetector()
+    urls = [f"https://e.com/item?id={i}" for i in range(20)]
+    for u in urls[:12]:
+        assert t.gate(u) == "ok"
+        t.dispatched(u)
+    assert t.gate(urls[12]) == "wait"
+    # all 12 samples failed with 429 and were never observed -> forced verdict, crawl continues
+    assert t.force_judgement() is True
+    assert t.gate(urls[12]) == "ok"

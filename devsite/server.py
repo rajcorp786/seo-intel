@@ -151,6 +151,7 @@ class Site:
             if self.variant == 1:
                 self.pages["/about/"]["title"] = "About Our Lift Company | Target"
                 self.pages["/blog/stale-post/"]["head"] = f'<link rel="canonical" href="{self.u("/blog/stale-post/")}">'
+                self.pages["/blog/stale-post/"]["lastmod"] = "2024-06-02"  # a CMS bumps <lastmod> on edit
                 self.add("/blog/new-post-next-day/", "New Post | Target", article(703, FILLER, "new post", 3))
                 del self.pages["/contact/"]
         else:
@@ -264,6 +265,9 @@ def make_handler(site: Site):
                 return self.send(200, "<?xml version='1.0'?><urlset xmlns='http://www.sitemaps.org/schemas/sitemap/0.9'>" +
                                  "".join(f"<url><loc>http://{s.host}{p}</loc><lastmod>{s.pages[p]['lastmod']}</lastmod></url>"
                                          for p in ps) + "</urlset>", "application/xml")
+            if THROTTLE.get("jitter"):  # real-internet-like random latency (0-300 ms)
+                import time as _t
+                _t.sleep(random.random() * 0.3)
             if THROTTLE["on"] and path != "/robots.txt":
                 with lock:
                     counter["n"] += 1
@@ -371,12 +375,14 @@ def main():
     ap.add_argument("--port-rival", type=int, default=8002)
     ap.add_argument("--gold", default=None)
     ap.add_argument("--variant", type=int, default=0)
+    ap.add_argument("--jitter", action="store_true", help="random 0-300 ms latency per request")
     ap.add_argument("--slow-js", action="store_true", help="JS sub-resource hangs for 200 s (render hang test)")
     ap.add_argument("--throttle", type=int, default=0, help="N: answer all but every N-th request with 429 (Retry-After: 60)")
     a = ap.parse_args()
     THROTTLE["on"] = a.throttle > 0
     THROTTLE["every"] = max(1, a.throttle)
     THROTTLE["slow_js"] = a.slow_js
+    THROTTLE["jitter"] = a.jitter
     t = Site("target", a.port_target, variant=a.variant)
     r = Site("rival", a.port_rival, rival=True)
     if a.gold:

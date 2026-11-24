@@ -40,6 +40,8 @@ class TrapDetector:
         self.facet = defaultdict(set)
         self.blocked_templates = {}
         self.tpl_hashes = defaultdict(list)
+        self.tpl_dispatched = defaultdict(int)
+        self.tpl_ok = set()
         self.trapped_fetches = 0
 
     def check(self, url: str, depth: int | None = None):
@@ -92,20 +94,60 @@ class TrapDetector:
                                  f"1 in {FACET_SAMPLE} kept)")
         return None
 
-    def observe(self, url: str, content_hash: str | None):
-        """After a fetch: template-level near-identical content => trap template."""
-        if not content_hash:
-            return None
+    # Template judgement is deterministic: the first TEMPLATE_MIN URLs of a candidate template (in the
+    # crawler's fixed order) are fetched; the rest of that template WAITS until all of them are done; the
+    # verdict is computed over those samples sorted by URL - never over "whatever finished first".
+    @staticmethod
+    def _candidate(tpl):
+        return "{n}" in tpl or "?" in tpl or "{h}" in tpl
+
+    def gate(self, url):
+        """'ok' | 'wait' | trap tuple, for dispatching url now."""
         tpl = template(url)
-        if "{n}" not in tpl and "?" not in tpl and "{h}" not in tpl:
+        if tpl in self.blocked_templates:
+            return self.blocked_templates[tpl]
+        if not self._candidate(tpl) or tpl in self.tpl_ok:
+            return "ok"
+        return "ok" if self.tpl_dispatched[tpl] < TEMPLATE_MIN else "wait"
+
+    def dispatched(self, url):
+        tpl = template(url)
+        if self._candidate(tpl) and tpl not in self.tpl_ok and tpl not in self.blocked_templates:
+            self.tpl_dispatched[tpl] += 1
+
+    def force_judgement(self):
+        """Called only when nothing is in flight and every queued URL of the level waits on a template:
+        judge those templates on the samples collected so far (deterministic: all samples are done)."""
+        changed = False
+        for tpl, n in sorted(self.tpl_dispatched.items()):
+            if n >= TEMPLATE_MIN and tpl not in self.tpl_ok and tpl not in self.blocked_templates:
+                samples = self.tpl_hashes[tpl]
+                hs = [h for _, h in sorted(samples)]
+                if hs and max(hs.count(h) for h in set(hs)) / len(hs) >= TEMPLATE_DUP and len(hs) >= TEMPLATE_MIN // 2:
+                    top = max(hs.count(h) for h in set(hs))
+                    self.blocked_templates[tpl] = ("template", f"{_shorten(tpl)} -> {top}/{len(hs)} identical pages")
+                else:
+                    self.tpl_ok.add(tpl)
+                changed = True
+        return changed
+
+    def observe(self, url: str, content_hash: str | None):
+        """After a fetch (content_hash None for non-HTML outcomes). Returns a trap tuple when judged a trap."""
+        tpl = template(url)
+        if not self._candidate(tpl) or tpl in self.tpl_ok or tpl in self.blocked_templates:
             return None
-        hs = self.tpl_hashes[tpl]
-        hs.append(content_hash)
-        if len(hs) >= TEMPLATE_MIN and tpl not in self.blocked_templates:
-            top = max(hs.count(h) for h in set(hs))
-            if top / len(hs) >= TEMPLATE_DUP:
-                self.blocked_templates[tpl] = ("template", f"{_shorten(tpl)} -> {top}/{len(hs)} identical pages")
-                return self.blocked_templates[tpl] + (len(hs),)
+        samples = self.tpl_hashes[tpl]
+        if len(samples) >= TEMPLATE_MIN:
+            return None
+        samples.append((url, content_hash or ("unique:" + url)))
+        if len(samples) < TEMPLATE_MIN:
+            return None
+        hs = [h for _, h in sorted(samples)]
+        top = max(hs.count(h) for h in set(hs))
+        if top / len(hs) >= TEMPLATE_DUP:
+            self.blocked_templates[tpl] = ("template", f"{_shorten(tpl)} -> {top}/{len(hs)} identical pages")
+            return self.blocked_templates[tpl] + (len(hs),)
+        self.tpl_ok.add(tpl)
         return None
 
 

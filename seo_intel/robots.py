@@ -201,6 +201,28 @@ def parse(body):
     return recs
 
 
+def parse_report(body):
+    """Mirror of google/robotstxt's RobotsParseHandler callbacks for the reporting tests:
+    counts valid directives (user-agent/allow/disallow/sitemap), unknown directives, the last
+    line number that held a directive, and the sitemap value."""
+    rep = {"valid": 0, "unknown": 0, "last_line": 0, "sitemap": ""}
+    for line_num, line in enumerate(_split_lines(body), start=1):
+        kv = _key_value(line)
+        if not kv:
+            continue
+        t = _key_type(kv[0])
+        if t == "unknown":
+            rep["unknown"] += 1
+            rep["last_line"] = line_num
+            continue
+        assert line_num >= rep["last_line"]
+        rep["last_line"] = line_num
+        rep["valid"] += 1
+        if t == "sitemap":
+            rep["sitemap"] += kv[1]
+    return rep
+
+
 class RobotsMatcher:
     """Mirrors RobotsMatcher state machine for one (robots, agents, url) query."""
 
