@@ -146,7 +146,11 @@ class Agent:
             cl = []
             for l in ls:
                 cl.append(self.claim(kind="sentence", url=l["source"], value=l["sentence"]))
-                cl.append(self.claim(kind="anchor", url=l["source"], sentence=l["sentence"], value=l["anchor"]))
+                if l.get("anchor_mode") == "widen":
+                    cl.append(self.claim(kind="anchor", url=l["source"], sentence=l["sentence"], value=l["replaces"]))
+                    cl.append(self.claim(kind="title_phrase", url=t, value=l["anchor"]))
+                else:
+                    cl.append(self.claim(kind="anchor", url=l["source"], sentence=l["sentence"], value=l["anchor"]))
                 cl.append(self.pc(l["source"], t, "content_link_exists"))
             from .claims import _round
             b = self.claim(kind="pr_before", urls=[t], value=_round("pr_after", ctx.pr_before([t])))
@@ -225,13 +229,19 @@ class Agent:
                     f"The canonical [{c[0]}] points to a target whose status is [{c[1]}].{extra}",
                     ["Set the canonical to the final, indexable URL.", "Make the target page self-canonical."])
         if t == "add_internal_links":
-            k = len(f["links"])
+            parts, j = [], 2
+            for l in f["links"]:
+                if l.get("anchor_mode") == "widen":
+                    parts.append(f"[{c[j]}] widen [{c[j + 1]}] to [{c[j + 2]}] (not linked yet [{c[j + 3]}])")
+                    j += 4
+                else:
+                    parts.append(f"[{c[j]}] anchor [{c[j + 1]}] (not linked yet [{c[j + 2]}])")
+                    j += 3
             return ("Add the optimised in-content links to this priority page",
                     f"Adding the selected links raises its internal PageRank from [{c[0]}] to [{c[1]}]. Each link "
-                    f"uses an existing sentence and anchor on the source page: " +
-                    "; ".join(f"[{c[2 + 3 * i]}] anchor [{c[3 + 3 * i]}] (not linked yet [{c[4 + 3 * i]}])"
-                              for i in range(k)) + ".",
-                    ["Insert each link on the anchor text inside the quoted sentence.",
+                    f"uses an existing sentence on the source page; where no phrase there names only this page, "
+                    f"the nearest phrase is widened to one from its title: " + "; ".join(parts) + ".",
+                    ["Insert each link on the anchor text inside the quoted sentence (widened where shown).",
                      "Re-crawl and confirm the links render in the main content."])
         if t == "create_page":
             return ("Create a page for a topic the competitor covers in depth",

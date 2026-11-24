@@ -419,6 +419,7 @@ class SiteCrawl:
         fields, _ = P.parse_page(html, url)
         row = {"x_robots": r[1]}
         links = self.apply_fields(row, fields, url)
+        st.db.execute("UPDATE pages SET schema_types=? WHERE url=?", (row["schema_types"], url))
         self.enqueue_links(url, depth, links, row)
         self._observe(url, r[2] or r[3])
 
@@ -484,6 +485,7 @@ class SiteCrawl:
         row["meta_refresh"] = normalize(fields["meta_refresh"], url)[0] if fields["meta_refresh"] else None
         row["js_redirect"] = normalize(fields["js_redirect"], url)[0] if fields["js_redirect"] else None
         row["hreflang"] = json.dumps([(l, normalize(h, url)[0]) for l, h in fields["hreflang"]])
+        row["schema_types"] = ",".join(fields.get("schema") or []) or None
         links = []
         for i, (href, anchor, nofollow) in enumerate(fields["links"]):
             u, sess = normalize(href, url)

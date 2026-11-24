@@ -151,6 +151,8 @@ def describe_claim(c):
         return f"sentence on {c['url']}: \"{v}\""
     if k == "anchor":
         return f"anchor text \"{v}\" in that sentence on {c['url']}"
+    if k == "title_phrase":
+        return f"phrase \"{v}\" is in the title/H1 of {c['url']}"
     if k == "chain":
         return f"{c['metric']} of {c['url']} = {' -> '.join(v or [])}"
     if k == "gap":

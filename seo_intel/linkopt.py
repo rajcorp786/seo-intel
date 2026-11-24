@@ -167,7 +167,28 @@ def target_phrases(page, top_terms, anchors):
 END_PUNCT = re.compile(r"[.!?।:;\"”’)]\s*$")
 
 
-def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_heads=()):
+def gram_set(text, lo=2, hi=6):
+    toks = [m.group(0).lower() for m in TOKEN_I.finditer(text or "")]
+    return {tuple(toks[i:i + L]) for L in range(lo, hi + 1) for i in range(len(toks) - L + 1)}
+
+
+def ambiguous_grams(needed, pages):
+    """needed: {gram: target_url}. A gram is ambiguous for its target when the title/H1 of ANY other page
+    of the site contains it too: such an anchor would point readers (and Google) at two pages at once,
+    i.e. create the anchor-text cannibalization this tool reports. Returns the set of ambiguous grams."""
+    bad = set()
+    if not needed:
+        return bad
+    for p in pages:
+        gs = gram_set(f"{p.get('title') or ''} | {p.get('h1') or ''}")
+        for g in gs & needed.keys():
+            if needed[g] != p["url"]:
+                bad.add(g)
+    return bad
+
+
+def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_heads=(), banned=frozenset(),
+                rewrite_phrases=()):
     """Return (sentence, anchor, score) or None.
     * anchor = exact substring of the sentence, >= 2 real words (no digits-only tokens), at least one
       of them a DISTINCTIVE word of the target's title/H1 (site-wide template words excluded)
@@ -181,7 +202,7 @@ def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_hea
         for L in range(2, 7):
             for i in range(len(seq) - L + 1):
                 g = tuple(seq[i:i + L])
-                if g[0] in STOP or g[-1] in STOP:
+                if g[0] in STOP or g[-1] in STOP or g in banned:
                     continue
                 grams.add(g)
     for si, sent in enumerate(sentences(main_text)):
@@ -199,7 +220,7 @@ def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_hea
             for i in range(len(toks) - L + 1):
                 g = toks[i:i + L]
                 words = [x for x in g if x not in STOP and not x.isdigit() and len(x) >= 2]
-                if tuple(g) in grams and len(words) >= 2 and any(x in title_words for x in words):
+                if tuple(g) in grams and len(words) >= 2 and any(x in title_words for x in g):
                     cand = (ms[i].start(), ms[i + L - 1].end(), len(words))
                     break
             if cand:
@@ -208,4 +229,50 @@ def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_hea
             best = (sent, sent[cand[0]:cand[1]], cand[2])
             if cand[2] >= 3:
                 break
+    if best is not None or not rewrite_phrases:
+        return best
+    return _rewrite_anchor(main_text, rewrite_phrases, existing, heads)
+
+
+def _rewrite_anchor(main_text, full_phrases, existing, heads):
+    """No sentence holds an unambiguous anchor verbatim. Find a sentence that holds a PART of one
+    (e.g. 'home lift') and propose widening that part to the full phrase that names only the target
+    (e.g. 'home lift model 3'). Returns (sentence, matched_part, score, full_phrase, rewritten_sentence)."""
+    best = None
+    for sent in sentences(main_text):
+        if len(sent) > 400 or len(sent.split()) < 6 or not END_PUNCT.search(sent):
+            continue
+        low = sent.lower()
+        if any(a in low for a in existing) or low in heads or any(low and low in h for h in heads):
+            continue
+        ms = list(TOKEN_I.finditer(sent))
+        toks = [m.group(0).lower() for m in ms]
+        for rank, full in enumerate(full_phrases):  # phrases come best-first: the first one that fits wins
+            fl = len(full)
+            hit = None
+            for L in range(min(fl - 1, len(toks)), 1, -1):
+                for i in range(len(toks) - L + 1):
+                    part = tuple(toks[i:i + L])
+                    words = [x for x in part if x not in STOP and not x.isdigit()]
+                    if len(words) < 2 or part[0] in STOP or part[-1] in STOP:
+                        continue
+                    if any(full[j:j + L] == part for j in range(fl - L + 1)):
+                        hit = (i, L)
+                        break
+                if hit:
+                    break
+            if hit:
+                i, L = hit
+                a, b = ms[i].start(), ms[i + L - 1].end()
+                phrase = " ".join(full)
+                if sent[a].isupper():
+                    phrase = phrase[0].upper() + phrase[1:]
+                score = (-rank, L / fl)
+                if best is None or score > best[2]:
+                    best = (sent, sent[a:b], score, phrase, sent[:a] + phrase + sent[b:])
+                break
+        if best is not None and best[2] >= (0, 0.75):
+            break
+    if best is not None:
+        best = best[:2] + (round(best[2][1], 4),) + best[3:]
     return best

@@ -138,16 +138,32 @@ CUES = {
     ],
     "navigational": [
         (r"^(home|about|about us|contact|contact us|login|log in|sign in|my account|careers|sitemap|"
-         r"privacy policy|terms|terms of service|cookie policy)\b|हमारे बारे में|संपर्क", 3.0, "title"),
+         r"privacy policy|terms|terms of service|cookie policy)\s*($|[|\-–—:·•,])|हमारे बारे में|संपर्क", 3.0, "title"),
         (r"/(about|about-us|contact|contact-us|login|signin|account|careers|privacy|terms|sitemap|tag|tags|"
          r"category|categories|author)(/|$|-|\.)", 2.5, "url"),
     ],
 }
 COMPILED = {k: [(re.compile(rx, re.I), w, f) for rx, w, f in v] for k, v in CUES.items()}
+
+# schema.org / Open Graph types the page itself declares. Site-wide types (WebSite, Organization,
+# BreadcrumbList, WebPage, ImageObject ...) are on every page and carry no intent, so they are not listed.
+SCHEMA_INTENT = {
+    "Product": ("transactional", 4.0), "ProductGroup": ("transactional", 4.0), "IndividualProduct": ("transactional", 4.0),
+    "Offer": ("transactional", 3.0), "AggregateOffer": ("transactional", 3.0), "SoftwareApplication": ("transactional", 3.0),
+    "WebApplication": ("transactional", 3.0), "Event": ("transactional", 2.0), "og:product": ("transactional", 3.0),
+    "Review": ("commercial", 3.0), "ItemList": ("commercial", 1.0),
+    "Article": ("informational", 3.0), "BlogPosting": ("informational", 3.5), "NewsArticle": ("informational", 3.5),
+    "TechArticle": ("informational", 3.5), "HowTo": ("informational", 4.0), "FAQPage": ("informational", 2.0),
+    "QAPage": ("informational", 3.5), "Recipe": ("informational", 3.0), "og:article": ("informational", 2.0),
+    "AboutPage": ("navigational", 4.0), "ContactPage": ("navigational", 4.0), "ProfilePage": ("navigational", 3.0),
+    "CollectionPage": ("navigational", 2.0), "SearchResultsPage": ("navigational", 4.0),
+}
 INTENTS = ["informational", "commercial", "transactional", "navigational"]
 
 
-def intent_scores(p, anchors, inlink_count, outlink_ratio):
+def intent_scores(p, anchors, inlink_count, outlink_ratio, schema=None):
+    """Rule scores per intent. Signals: title/H1 + incoming anchors, URL path, body cues, schema.org /
+    og:type declarations, length, and link density (outlink_ratio = in-content links per 100 words)."""
     url = p["url"].lower()
     title = f"{p['title'] or ''} {p['h1'] or ''}".lower()
     text = (p["main_text"] or "")[:4000].lower()
@@ -161,11 +177,19 @@ def intent_scores(p, anchors, inlink_count, outlink_ratio):
                 s[intent] += w * min(3, n) ** 0.5
             if field == "title" and rx.search(text[:600]):
                 s[intent] += 0.5 * w
+    has_review = False
+    for t in sorted(set(schema or ())):
+        hit = SCHEMA_INTENT.get(t)
+        if hit:
+            s[hit[0]] += hit[1]
+            has_review |= t == "Review"
+    if has_review and s["transactional"] > 0:
+        s["commercial"] -= 3.0  # reviews embedded in a product page are not a review page
     wc = p["word_count"] or 0
     if wc > 700:
         s["informational"] += 1.5
-    if wc < 120 and outlink_ratio > 0.5:
-        s["navigational"] += 1.5
+    if wc < 400 and outlink_ratio > 8:
+        s["navigational"] += 2.0  # a listing / hub: one in-content link every dozen words
     path = url.split("://", 1)[-1].split("/", 1)[-1].split("?")[0].strip("/")
     if path == "":
         s["navigational"] += 3.0

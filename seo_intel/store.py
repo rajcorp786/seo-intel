@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS pages(
   canonical TEXT, meta_refresh TEXT, js_redirect TEXT, title TEXT, h1 TEXT,
   lang TEXT, hreflang TEXT, depth INT, soft404 INT DEFAULT 0, soft404_reason TEXT,
   main_text TEXT, main_hash TEXT, word_count INT, fetched_at INT, unchanged INT DEFAULT 0,
-  run INT DEFAULT 0, lastmod TEXT, scripts INT DEFAULT 0, vhash TEXT);
+  run INT DEFAULT 0, lastmod TEXT, scripts INT DEFAULT 0, vhash TEXT, schema_types TEXT);
 CREATE INDEX IF NOT EXISTS pages_site ON pages(site);
 CREATE TABLE IF NOT EXISTS prev_pages(
   url TEXT PRIMARY KEY, site TEXT, status INT, final_url TEXT, title TEXT,
@@ -52,6 +52,16 @@ class Store:
         self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        """Older crawl.db files (earlier versions) get the newer columns, so incremental runs keep working."""
+        want = {"urls": [("ord", "TEXT")], "pages": [("vhash", "TEXT"), ("schema_types", "TEXT")]}
+        for table, cols in want.items():
+            have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for name, typ in cols:
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
     # ---------- meta ----------
     def get_meta(self, k, default=None):

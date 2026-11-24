@@ -176,6 +176,19 @@ class Site:
                 "</p><a href='/about/'>About</a> <a href='/privacy/'>Privacy</a> <a href='/terms/'>Terms</a>"
                 "<p>Subscribe to our newsletter for monthly lift tips.</p></footer>")
 
+    def jsonld(self, path, p):
+        """Structured data like a real CMS: a site-wide @graph on every page plus a page type."""
+        graph = [{"@type": "WebSite", "name": self.name}, {"@type": "Organization", "name": self.name},
+                 {"@type": "BreadcrumbList", "itemListElement": []}]
+        if path.startswith("/blog/") and path.count("/") == 3:
+            graph.append({"@type": "BlogPosting", "headline": p["h1"]})
+        elif path.startswith("/products/") and path.count("/") == 3:
+            graph.append({"@type": "Product", "name": p["h1"], "offers": {"@type": "Offer", "priceCurrency": "INR"},
+                          "review": [{"@type": "Review"}]})
+        elif path == "/about/":
+            graph.append({"@type": "AboutPage"})
+        return "<script type='application/ld+json'>" + json.dumps({"@context": "https://schema.org", "@graph": graph}) + "</script>"
+
     def page_html(self, path, p, extra_links=""):
         body = f"<h1>{p['h1']}</h1>" + "".join(f"<p>{x}</p>" for x in p["paras"])
         # in-content links: link to two related posts with descriptive anchors
@@ -184,7 +197,7 @@ class Site:
             tgt = rng.choice(self.blog_paths)
             body += f"<p>Read our <a href='{tgt}'>{self.pages[tgt]['h1'].lower()}</a> next.</p>"
         return (f"<!doctype html><html lang='{p['lang']}'><head><meta charset='utf-8'><title>{p['title']}</title>"
-                f"{p['head']}</head><body>{self.nav()}<div class='wrap'><main class='content'><article>{body}"
+                f"{p['head']}{self.jsonld(path, p)}</head><body>{self.nav()}<div class='wrap'><main class='content'><article>{body}"
                 f"</article>{extra_links}</main>{self.sidebar(path)}</div>{p['body_extra']}{self.footer()}</body></html>")
 
     def home(self):
