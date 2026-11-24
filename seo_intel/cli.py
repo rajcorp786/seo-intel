@@ -127,6 +127,8 @@ async def crawl_both(store, cfg, log, deadline, resume_run=False):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="seo-intel", description="Crawl a site and a competitor and build a "
                                  "claim-verified SEO action plan.")
+    from . import __version__
+    ap.add_argument("--version", action="version", version=f"seo-intel {__version__}")
     ap.add_argument("domain")
     ap.add_argument("--competitor", required=True)
     ap.add_argument("--out", default=None, help="output folder (default: ./seo-intel-<domain>)")
@@ -162,7 +164,8 @@ def main(argv=None):
     crawl_deadline = t0 + budget * cfg.crawl_share
     cfg.end_time = t0 + budget
     timings = {}
-    log(f"seo-intel: target={cfg.target} competitor={cfg.competitor} out={out}")
+    from . import __version__
+    log(f"seo-intel {__version__}: target={cfg.target} competitor={cfg.competitor} out={out}")
     resume_run = store.get_meta("run_state") == "running"
     if resume_run:
         log("previous run was interrupted: resuming")
@@ -189,7 +192,7 @@ def main(argv=None):
             store.set_meta(f"first_run_seconds:{s}", total)
     store.set_meta("run_state", "complete")
     ram.stop = True
-    stats = {"total_seconds": round(total, 1), "timings": timings, "peak_ram_mb": round(ram.peak / 2 ** 20, 1),
+    stats = {"version": __version__, "total_seconds": round(total, 1), "timings": timings, "peak_ram_mb": round(ram.peak / 2 ** 20, 1),
              "llm": llm.stats(), "network": net, "first_run": first_run,
              "modes": {s: store.get_meta(f"mode:{s}") for s in ("target", "competitor")},
              "actions": len(actions), "claims": len(claims), "rejected_claims": len(rejections),

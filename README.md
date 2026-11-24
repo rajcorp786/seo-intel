@@ -25,7 +25,7 @@ source .venv/bin/activate
 python -m pip install . && python -m playwright install chromium
 ```
 
-Check it works: `python -m pytest tests` (37 tests, ~10 s) and `seo-intel --help`.
+Check it works: `seo-intel --version`, `python -m pytest tests` (37 tests, ~10 s).
 
 * Always use `python -m pip`, not plain `pip`: on many machines `pip` is not on the PATH.
 * The second half of the install line downloads the headless browser used for JavaScript pages. If you skip
@@ -99,7 +99,7 @@ Timing, memory and AI cost for the run are in `logs/run_stats.json`.
 
 * The crawler obeys `robots.txt` the way Google reads it and never sends more than 6 requests per second to one site.
 * Same input + same `--seed` gives byte-identical files in `report/`.
-* Measurement commands for every target are in `BENCHMARKS.md`, and design decisions are in `DECISIONS.md`.
+* Measurement commands for every target are in `BENCHMARKS.md`, design decisions are in `DECISIONS.md`, and version history is in `CHANGELOG.md`.
 * `tools\run_tough_tests.bat` runs several hard real-site pairs in one go, and `tools/collect_results.py` zips their results.
 * `tools\make_label_kit.bat RUN…` opens a click-through page for the human labels (main content, recommendations,
   cannibalization pairs). `tools\compute_label_scores.bat RUN…` turns those labels into F1, Cohen's kappa and the ablation table.
