@@ -190,6 +190,28 @@ def run_all(store, cfg, log, llm):
     return ctx
 
 
+def _soft404_self_test(st, site, model, ptoks, probe):
+    """Second, differently-shaped missing URL: a site that answers it with a proper 404 is fine; one that
+    answers 200 must be flagged by the classifier using probe A's fingerprint, or the check fails."""
+    b = st.get_meta(f"probe404b:{site}") or {}
+    if not b:
+        return {"result": "not run"}
+    out = {"url": b.get("url"), "status": b.get("status")}
+    if b.get("status") in (404, 410):
+        out["result"] = "pass: the site returns a real 404 for missing pages"
+    elif b.get("status") == 200 and b.get("html") and model:
+        tree = P.to_tree(b["html"])
+        main, _ = extract.extract(tree, model)
+        f, _ = P.parse_page(b["html"], b["url"])
+        page = {"url": b["url"], "title": f["title"], "h1": f["h1"], "main_text": main}
+        r = soft404.classify(page, ptoks, False)
+        out["result"] = "pass: detected as soft 404" if r else "FAIL: a missing page answered 200 and was not flagged"
+        out["reason"] = r
+    else:
+        out["result"] = f"pass: status {b.get('status')} (not an indexable 200)"
+    return out
+
+
 def stage_soft404(ctx, models):
     st = ctx.store
     n = 0
@@ -211,6 +233,7 @@ def stage_soft404(ctx, models):
         st.db.executemany("UPDATE pages SET soft404=?, soft404_reason=? WHERE url=?", res)
         st.db.execute("COMMIT")
         ctx.results[f"probe404_{site}"] = {"url": probe.get("url"), "status": probe.get("status")}
+        ctx.results[f"soft404_self_test_{site}"] = _soft404_self_test(st, site, models.get(site), ptoks, probe)
     ctx.log(f"soft-404: {n} pages flagged")
 
 

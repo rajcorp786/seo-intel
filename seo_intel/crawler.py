@@ -25,6 +25,7 @@ MAX_RETRIES = 4
 PAGE_EFFICIENCY = 0.75
 HUB_SHARE = 2          # % of known pages (by in-links) re-checked on every incremental run
 HUB_MIN = 10
+RENDER_AUDIT_N = 4     # renders kept for the automatic render-recall audit
 REFRESH_ROTATION = 20  # 1 in 20 other pages re-checked per incremental run (each page within ~20 runs)
 
 
@@ -181,6 +182,7 @@ class SiteCrawl:
         t_front = time.monotonic()
         await self.drain_renders(final=True)
         await self.template_probe_phase()
+        await self.render_audit()
         self.log(f"[{self.role}] phases: seed {t_seed - t0:.1f}s, frontier {t_front - t_seed:.1f}s, "
                  f"render {time.monotonic() - t_front:.1f}s")
 
@@ -234,11 +236,17 @@ class SiteCrawl:
         probe = f"{self.start_url.rstrip('/')}/seo-intel-probe-{sha(self.domain)[:10]}-does-not-exist"
         if not self.allowed_sync(probe):
             return
-        r = await self.f.fetch(probe, same_site=self.same_site)
-        st = r.get("status")
-        self.store.set_meta(f"probe404:{self.role}", {"url": probe, "status": st if isinstance(st, int) else str(st),
-                                                    "html": decode(r.get("body") or b"", r.get("encoding"))[:300000]
-                                                    if st == 200 else None})
+        # probe B has a different shape (deeper path, .html): the soft-404 self-test checks that the
+        # fingerprint learned from probe A recognises it
+        probe_b = f"{self.start_url.rstrip('/')}/seo-intel-check/{sha(self.domain)[10:20]}-missing-page.html"
+        for key, u in ((f"probe404:{self.role}", probe), (f"probe404b:{self.role}", probe_b)):
+            if not self.allowed_sync(u):
+                continue
+            r = await self.f.fetch(u, same_site=self.same_site)
+            st = r.get("status")
+            self.store.set_meta(key, {"url": u, "status": st if isinstance(st, int) else str(st),
+                                      "html": decode(r.get("body") or b"", r.get("encoding"))[:300000]
+                                      if st == 200 else None})
 
     async def frontier_loop(self):
         """Deterministic BFS: one depth level at a time, URLs of a level in a fixed hash order, a page cap
@@ -511,8 +519,35 @@ class SiteCrawl:
         self.enqueue(items, url)
 
     # ------------------------------------------------------------ rendering
-    def render_budget(self):
-        return int(RENDER_SHARE * self.n_html) - self.n_rendered
+    def render_budget(self, audit=False):
+        """Renders still allowed (15% cap). RENDER_AUDIT_N of them are kept for the recall audit."""
+        return int(RENDER_SHARE * self.n_html) - self.n_rendered - (0 if audit else RENDER_AUDIT_N)
+
+    async def render_audit(self):
+        """Automatic render-recall check: render a fixed hash-ordered sample of script-bearing pages the
+        policy chose NOT to render. A sampled page whose text grows by > DIFF_THRESHOLD is a missed render;
+        the miss rate on the sample estimates how many such pages the rest of the site holds."""
+        if not self.renderer.available:
+            return
+        from .render import DIFF_THRESHOLD
+        pool = sorted((u for (u,) in self.store.db.execute(
+            "SELECT url FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND rendered=0 AND scripts>0 "
+            "AND run=?", (self.role, self.run))), key=sha)
+        st = self.store
+        st.stat(self.role, "render_audit_pool", len(pool))
+        sample = pool[:max(0, min(RENDER_AUDIT_N, self.render_budget(audit=True)))]
+        missed = 0
+        n_par = max(1, self.renderer.n)
+        done = 0
+        for i in range(0, len(sample), n_par):
+            if not self.deadline_ok():
+                break
+            part = sample[i:i + n_par]
+            gains = await asyncio.gather(*(self.render_one(u, "audit") for u in part))
+            done += len(part)
+            missed += sum(1 for g in gains if g is not None and g > DIFF_THRESHOLD)
+        st.stat(self.role, "render_audit_sampled", done)
+        st.stat(self.role, "render_audit_missed", missed)
 
     async def drain_renders(self, final=False):
         n_par = max(1, self.renderer.n)

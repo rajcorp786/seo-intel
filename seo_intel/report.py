@@ -99,7 +99,33 @@ def crawl_summary(store, site):
             "x_robots_tag": xr, "canonical_issues": canon, "soft_404": soft,
             "urls_blocked_by_robots": store.count("SELECT COUNT(*) FROM urls WHERE site=? AND state='blocked'", (site,)),
             "urls_discovered_not_fetched": store.count("SELECT COUNT(*) FROM urls WHERE site=? AND state='queued'", (site,)),
-            "sitemap_urls": int(store.get_stat(site, "sitemap_urls"))}
+            "sitemap_urls": int(store.get_stat(site, "sitemap_urls")),
+            "render_recall_audit": render_audit(store, site)}
+
+
+def render_audit(store, site):
+    """Estimated render recall from the crawl's audit sample (see Crawler.render_audit)."""
+    from .render import DIFF_THRESHOLD
+    sampled = int(store.get_stat(site, "render_audit_sampled"))
+    if not store.get_stat(site, "render_available", 0):
+        return {"result": "not run (no browser)"}
+    if sampled == 0:
+        return {"result": "not run (no unrendered script pages, or render budget used up)",
+                "pool": int(store.get_stat(site, "render_audit_pool"))}
+    missed = int(store.get_stat(site, "render_audit_missed"))
+    pool = int(store.get_stat(site, "render_audit_pool"))
+    found = 0
+    for (rr,) in store.db.execute("SELECT render_reason FROM pages WHERE site=? AND rendered=1 AND "
+                                  "render_reason NOT LIKE 'audit:%'", (site,)):
+        try:
+            found += float((rr or "").rsplit("gain=", 1)[1]) > DIFF_THRESHOLD
+        except (IndexError, ValueError):
+            pass
+    est_missed = missed / sampled * pool
+    recall = found / (found + est_missed) if (found + est_missed) > 0 else 1.0
+    return {"sampled": sampled, "missed_in_sample": missed, "unrendered_script_pages": pool,
+            "renders_that_changed_content": found, "estimated_render_recall": round(recall, 4),
+            "note": "estimate from a fixed hash-ordered sample; the gold-labelled check is seo-intel-eval render-audit"}
 
 
 def change_report(store, site):
