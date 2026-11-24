@@ -9,7 +9,7 @@ import httpx
 
 from .urlnorm import host_of, normalize
 
-UA = "Mozilla/5.0 (compatible; seo-intel/0.1; +https://github.com/seo-intel)"
+UA = "Mozilla/5.0 (compatible; seo-intel/1.0; +https://github.com/rajcorp786/seo-intel)"
 MAX_BYTES = 5 * 1024 * 1024
 MAX_HOPS = 10
 

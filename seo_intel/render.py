@@ -116,7 +116,7 @@ class Renderer:
 
     async def _render(self, url, html, timeout_ms, idle_ms):
         async with self.sem:
-            ctx = await self._browser.new_context(user_agent="Mozilla/5.0 (compatible; seo-intel/0.1)",
+            ctx = await self._browser.new_context(user_agent="Mozilla/5.0 (compatible; seo-intel/1.0; +https://github.com/rajcorp786/seo-intel)",
                                                   java_script_enabled=True)
             page = await ctx.new_page()
             nav = {"target": None, "main_done": False}
