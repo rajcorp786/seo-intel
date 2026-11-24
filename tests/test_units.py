@@ -235,3 +235,23 @@ def test_url_series_groups_one_page_per_place_templates():
     s = url_series(urls)
     assert all(s[u] == ("home", "lifts", "in") for u in urls[:9])
     assert all(s[u] is None for u in urls[9:])
+
+
+def test_keyword_variant_series_merge_into_one_family():
+    import numpy as np
+    from seo_intel.gaps import _merge_families, url_series
+    cities = ["agra", "ajmer", "pune", "surat", "kota", "goa", "mysore", "patna", "indore"]
+    urls = [f"https://c.com/{p}-in-{c}/" for p in ("home-lifts", "house-lifts") for c in cities] + \
+           [f"https://c.com/blog/escalator-{w}/" for w in cities]
+    s = url_series(urls)
+    rng = np.random.RandomState(0)
+    base = {"home-lifts": np.eye(16)[1] + 0.01 * rng.rand(16), "house-lifts": None, "blog": np.eye(16)[0]}
+    base["house-lifts"] = base["home-lifts"] + 0.01
+    Z = np.array([base["blog" if "blog" in u else u.split("/")[3].rsplit("-in-", 1)[0]] for u in urls])
+    rows = [(i, "competitor", u, 500) for i, u in enumerate(urls)]
+    from collections import defaultdict
+    groups = defaultdict(list)
+    for r in rows:
+        groups[("series", s[r[2]])].append(r)
+    out, fams = _merge_families(groups, s, Z)
+    assert fams == 1 and len(out) == 2   # home/house lifts merged; the blog series stays apart
