@@ -17,6 +17,7 @@ dependencies = [
   "psutil>=5.9",
   "anthropic>=0.40",
   "playwright>=1.40",
+  "pytest>=7",
 ]
 
 [project.optional-dependencies]

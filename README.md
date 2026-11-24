@@ -3,17 +3,37 @@
 `seo-intel` compares **your website** with **a competitor's website** and gives you an SEO action plan.
 Every fact in the plan is checked by code against the crawl before it is written out.
 
-## 1. Install (one command)
+## 1. Install
 
-You need Python 3.10 or newer. In the project folder:
+You need **Python 3.10 or newer** and **git**. Check with `python --version` (on Windows you can also use `py --version`).
 
+**Windows (CMD)**
 ```
-pip install . && python -m playwright install chromium
+git clone https://github.com/rajcorp786/seo-intel.git
+cd seo-intel
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install . && python -m playwright install chromium
 ```
 
-The second half downloads the headless browser used for JavaScript pages. If you skip it, the tool
-tries to download the browser on first use. If that also fails, it prints a WARNING and continues
-without rendering.
+**Mac / Linux**
+```
+git clone https://github.com/rajcorp786/seo-intel.git
+cd seo-intel
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install . && python -m playwright install chromium
+```
+
+Check it works: `python -m pytest tests` (37 tests, ~10 s) and `seo-intel --help`.
+
+* Always use `python -m pip`, not plain `pip`: on many machines `pip` is not on the PATH.
+* The second half of the install line downloads the headless browser used for JavaScript pages. If you skip
+  it, the tool tries to download the browser on first use. If that also fails, it prints a WARNING and
+  continues without rendering.
+* Linux servers without a desktop may also need the browser's system libraries:
+  `python -m playwright install --with-deps chromium` (needs sudo).
+* Next time, only `activate` the `.venv` again (step 4) before running.
 
 ## 2. (Optional) Turn on the AI writer
 
@@ -64,7 +84,18 @@ Open the folder `seo-intel-yoursite.com/report/`:
 
 Timing, memory and AI cost for the run are in `logs/run_stats.json`.
 
-## 5. Good to know
+## 5. If something goes wrong
+
+| Message | Fix |
+|---|---|
+| `'pip' is not recognized` | use `python -m pip ...` (see Install) |
+| `'python' is not recognized` (Windows) | use `py` instead of `python` for the venv step, or install Python from python.org with "Add to PATH" ticked |
+| `'seo-intel' is not recognized` | activate the venv first: `.venv\Scripts\activate` (Windows) / `source .venv/bin/activate` |
+| `WARNING: headless browser not available` | `python -m playwright install chromium` |
+| `ERROR: robots.txt ... could not be read` | the site is down or blocks bots; the tool does not crawl it (Google behaves the same) |
+| Very few pages, many `429` | the site rate-limits bots; the tool backs off as Googlebot does |
+
+## 6. Good to know
 
 * The crawler obeys `robots.txt` the way Google reads it and never sends more than 6 requests per second to one site.
 * Same input + same `--seed` gives byte-identical files in `report/`.
