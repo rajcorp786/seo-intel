@@ -67,14 +67,15 @@ def add_edge(W, s, t):
     return (W + sparse.csr_matrix(([1.0], ([s], [t])), shape=W.shape)).tocsr()
 
 
-def greedy(W, pri_idx, cands, K, max_per_source=MAX_PER_SOURCE, top_m=TOP_M, exact_all=False):
+def greedy(W, pri_idx, cands, K, max_per_source=MAX_PER_SOURCE, top_m=TOP_M, exact_all=False,
+           max_per_target=None):
     """cands: list of (s, t, meta). Returns chosen list of (s,t,meta, gain)."""
-    chosen, per_src, used = [], {}, set()
+    chosen, per_src, per_tgt, used = [], {}, {}, set()
     cur = W.copy().tocsr()
     base = priority_value(cur, pri_idx)
     for _ in range(K):
         avail = [c for c in cands if (c[0], c[1]) not in used and per_src.get(c[0], 0) < max_per_source
-                 and cur[c[0], c[1]] == 0]
+                 and cur[c[0], c[1]] == 0 and (max_per_target is None or per_tgt.get(c[1], 0) < max_per_target)]
         if not avail:
             break
         pr = pagerank(cur)
@@ -92,6 +93,7 @@ def greedy(W, pri_idx, cands, K, max_per_source=MAX_PER_SOURCE, top_m=TOP_M, exa
         cur = add_edge(cur, best[0], best[1])
         used.add((best[0], best[1]))
         per_src[best[0]] = per_src.get(best[0], 0) + 1
+        per_tgt[best[1]] = per_tgt.get(best[1], 0) + 1
         chosen.append((best[0], best[1], best[2], best_val - base))
         base = best_val
     return chosen, cur

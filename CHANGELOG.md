@@ -2,6 +2,15 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.3 (2026-11-24): report quality
+Found by a real run (hybonelevators.com vs eliteelevators.com).
+
+| Area | What changed | Why |
+|---|---|---|
+| Gaps | One-page-per-place URL series (`/home-lifts-in-<city>/`) are detected and reported as ONE gap each; only the other pages are topic-clustered | 48 gaps were the same city-page templates split by city name; topic terms were city names |
+| Link plan | At most K/5 new links per target page (min 3) | 27 of 33 links went to one page, all with the anchor "spare parts" |
+| Priority pages | Paginated listings and category/tag archives are never chosen automatically | `/blogs/2/` … `/blogs/5/` were picked as priority pages |
+
 ## 1.0.2 (2026-11-24): slow and throttling sites
 Found by a real run (daffodilsw.com vs capitalnumbers.com): 57 "slow down" (429/503) answers, the target crawl
 was cut by the clock at 929 pages with 1,528 URLs left, so a second run could have ended elsewhere.
