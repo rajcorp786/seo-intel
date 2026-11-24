@@ -8,6 +8,7 @@
   seo-intel-eval determinism DIR_A DIR_B                     byte-compare report/ folders
   seo-intel-eval pair-template --out DIR                    pair_labels_template.csv for Part C labels
   seo-intel-eval ablation --out DIR --labels pairs.csv      Part C signal ablation (precision@20)
+  seo-intel-eval label-kit RUN_DIR [RUN_DIR...]             one HTML page for all three human-label tasks
 """
 from __future__ import annotations
 
@@ -189,6 +190,11 @@ def cmd_ablation(a):
     print(json.dumps(out, indent=1))
 
 
+def cmd_label_kit(a):
+    from .labelkit import build
+    print(json.dumps(build(a.runs, a.html, a.pages, a.pairs), indent=1))
+
+
 def cmd_determinism(a):
     def digest(d):
         out = {}
@@ -214,10 +220,12 @@ def main(argv=None):
     p = sub.add_parser("determinism"); p.add_argument("a"); p.add_argument("b")
     p = sub.add_parser("pair-template"); p.add_argument("--out", required=True); p.add_argument("--n", type=int, default=60)
     p = sub.add_parser("ablation"); p.add_argument("--out", required=True); p.add_argument("--labels", required=True)
+    p = sub.add_parser("label-kit"); p.add_argument("runs", nargs="+"); p.add_argument("--html", default="label_kit.html")
+    p.add_argument("--pages", type=int, default=60); p.add_argument("--pairs", type=int, default=60)
     a = ap.parse_args(argv)
     return {"extract-f1": cmd_extract_f1, "render-audit": cmd_render_audit, "soft404": cmd_soft404,
             "judge": cmd_judge, "label-template": cmd_label_template, "determinism": cmd_determinism,
-            "pair-template": cmd_pair_template, "ablation": cmd_ablation}[a.cmd](a) or 0
+            "pair-template": cmd_pair_template, "ablation": cmd_ablation, "label-kit": cmd_label_kit}[a.cmd](a) or 0
 
 
 if __name__ == "__main__":

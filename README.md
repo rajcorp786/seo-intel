@@ -70,4 +70,7 @@ Timing, memory and AI cost for the run are in `logs/run_stats.json`.
 * Same input + same `--seed` gives byte-identical files in `report/`.
 * Measurement commands for every target are in `BENCHMARKS.md`, and design decisions are in `DECISIONS.md`.
 * `tools\run_tough_tests.bat` runs several hard real-site pairs in one go, and `tools/collect_results.py` zips their results.
+* `tools\make_label_kit.bat RUN…` opens a click-through page for the human labels (main content, recommendations,
+  cannibalization pairs). `tools\compute_label_scores.bat RUN…` turns those labels into F1, Cohen's kappa and the ablation table.
+* `tools\big_run.bat` does a full 90-minute run on a large pair. Run it again the next day for the incremental test.
 * Developers: `python -m pytest tests` runs the test suite. `python devsite/server.py` starts the synthetic test sites.

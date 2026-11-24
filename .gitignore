@@ -18,3 +18,9 @@ final-check/
 *.tar.gz
 labels_template.csv
 pair_labels_template.csv
+big-run/
+label_kit.html
+label-scores.txt
+gold.json
+labels.csv
+pair_labels.csv
