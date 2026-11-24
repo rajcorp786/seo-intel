@@ -21,13 +21,14 @@ from .urlnorm import host_of, is_asset, netloc_of, normalize, reg_domain, site_s
 
 
 MAX_RETRIES = 4
+TRANSIENT_RETRIES = 2
 # pages per site = rate x crawl seconds x this; leaves room for redirects, robots, sitemaps, renders and
 # back-off, so a normal site is fully crawled to the cap BEFORE the deadline (a deadline cut is timing-dependent)
 PAGE_EFFICIENCY = 0.75
 HUB_SHARE = 2          # % of known pages (by in-links) re-checked on every incremental run
 HUB_MIN = 10
 TRANCHE_FIRST = int(os.environ.get("SEO_INTEL_TRANCHE_FIRST", 200))    # the crawl grows in fixed steps (200, 300, 450 ... pages); see extend_tranche
-TRANCHE_GROWTH = 1.5
+TRANCHE_GROWTH = 2.0
 RENDER_AUDIT_N = 4     # renders kept for the automatic render-recall audit
 REFRESH_ROTATION = 20  # 1 in 20 other pages re-checked per incremental run (each page within ~20 runs)
 
@@ -330,7 +331,7 @@ class SiteCrawl:
         now = time.monotonic()
         elapsed = max(1.0, now - self.t_frontier)
         nxt = min(self.page_cap, max(done_pages + 1, int(self.tranche_cap * TRANCHE_GROWTH)))
-        need = 1.6 * elapsed * (nxt - done_pages) / max(1, done_pages)
+        need = 2.0 * elapsed * (nxt - done_pages) / max(1, done_pages)
         reserve = max(20.0, 0.12 * (self.deadline - self.t_frontier))
         if self.deadline - now - reserve >= need:
             self.tranche_cap = nxt
@@ -397,6 +398,15 @@ class SiteCrawl:
                     cond["If-Modified-Since"] = prev["last_modified"]
             r = await self.f.fetch(url, cond_headers=cond, same_site=self.same_site)
             self.n_requests_pages += 1 + len(r.get("chain", []))
+            stv = r.get("status")
+            transient = (not isinstance(stv, int)) or stv in (500, 502, 504, 520, 521, 522, 523, 524, 525)
+            if transient and not r.get("chain") and self.retries.get(url, 0) < TRANSIENT_RETRIES:
+                # a timeout / reset / 5xx is usually momentary: fetch once more (later in the same level)
+                # instead of storing a different error in each run
+                self.retries[url] = self.retries.get(url, 0) + 1
+                self.retrying.add(url)
+                await asyncio.sleep(1.0)
+                return
             if r.get("status") in (429, 503) and not r.get("chain"):
                 n = self.retries.get(url, 0)
                 self.f.limiter.penalize(host_of(url), (r.get("headers") or {}).get("retry-after"))

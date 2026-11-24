@@ -2,6 +2,15 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.7 (2026-11-25): repeatability on live sites
+Two fresh runs on hybonelevators.com vs eliteelevators.com gave different outputs (11 of 12 files).
+
+| Area | What changed |
+|---|---|
+| Diagnosis | `seo-intel-eval diff-runs runA runB`: pages fetched in one run only, status changes, changed text with the first differing HTML |
+| Crawl | Timeouts, resets and 5xx answers are retried twice instead of being stored as a different error in each run |
+| Crawl | Stop steps grow ×2 (200, 400, 800 …) with a 2× time margin, so two runs at different speeds land on the same step more often |
+
 ## 1.0.6 (2026-11-24): calibrated on the real run
 | Area | What changed | Why (v1.0.5 run, hybonelevators.com vs eliteelevators.com) |
 |---|---|---|

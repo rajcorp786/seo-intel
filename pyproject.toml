@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "seo-intel"
-version = "1.0.6"
+version = "1.0.7"
 description = "Crawl a site and a competitor, extract main content, find cannibalization and gaps, optimise internal links, and write a claim-verified action plan."
 readme = "README.md"
 requires-python = ">=3.10"

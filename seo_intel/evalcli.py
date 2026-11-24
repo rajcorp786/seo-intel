@@ -208,6 +208,55 @@ def cmd_determinism(a):
     return 0 if not diff else 1
 
 
+def cmd_diff_runs(a):
+    """Explain WHY two runs differ: which pages were fetched in one run only, which changed status, and
+    which pages' text changed (with the first differing words). Works on any two finished run folders."""
+    import sqlite3
+    import zlib
+    from pathlib import Path
+
+    def load(run):
+        db = sqlite3.connect(str(Path(run) / "crawl.db"))
+        pages = {r[0]: r[1:] for r in db.execute(
+            "SELECT url, site, status, raw_hash, main_hash, title, rendered, html FROM pages")}
+        stats = {(s_, k): v for s_, k, v in db.execute("SELECT site, k, v FROM stats")}
+        return pages, stats
+
+    pa, sa = load(a.a)
+    pb, sb = load(a.b)
+    out = {}
+    for site in ("target", "competitor"):
+        A = {u: v for u, v in pa.items() if v[0] == site}
+        B = {u: v for u, v in pb.items() if v[0] == site}
+        only_a, only_b = sorted(set(A) - set(B)), sorted(set(B) - set(A))
+        both = sorted(set(A) & set(B))
+        status = [(u, A[u][1], B[u][1]) for u in both if A[u][1] != B[u][1]]
+        raw = [u for u in both if A[u][1] == 200 and A[u][2] != B[u][2]]
+        main = [u for u in both if A[u][3] != B[u][3]]
+        rend = [u for u in both if A[u][5] != B[u][5]]
+        examples = []
+        for u in main[:5]:
+            ta, tb = A[u][6], B[u][6]
+            try:
+                ta = zlib.decompress(ta).decode("utf-8", "replace") if ta else ""
+                tb = zlib.decompress(tb).decode("utf-8", "replace") if tb else ""
+            except zlib.error:
+                ta, tb = str(ta or ""), str(tb or "")
+            i = next((k for k in range(min(len(ta), len(tb))) if ta[k] != tb[k]), min(len(ta), len(tb)))
+            examples.append({"url": u, "html_a": ta[max(0, i - 80):i + 120], "html_b": tb[max(0, i - 80):i + 120]})
+        out[site] = {
+            "pages_a": len(A), "pages_b": len(B),
+            "fetched_only_in_a": len(only_a), "fetched_only_in_b": len(only_b),
+            "examples_only_a": only_a[:8], "examples_only_b": only_b[:8],
+            "status_changed": len(status), "examples_status": status[:8],
+            "raw_html_changed": len(raw), "main_text_changed": len(main), "render_differs": len(rend),
+            "stopped_at_step": [sa.get((site, "stopped_at_step")), sb.get((site, "stopped_at_step"))],
+            "throttled": [sa.get((site, "throttled")), sb.get((site, "throttled"))],
+            "first_html_difference": examples,
+        }
+    print(json.dumps(out, indent=1, ensure_ascii=False))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="seo-intel-eval")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -218,6 +267,7 @@ def main(argv=None):
     p = sub.add_parser("judge"); p.add_argument("--out", required=True); p.add_argument("--labels", required=True)
     p = sub.add_parser("label-template"); p.add_argument("--out", required=True)
     p = sub.add_parser("determinism"); p.add_argument("a"); p.add_argument("b")
+    p = sub.add_parser("diff-runs"); p.add_argument("a"); p.add_argument("b")
     p = sub.add_parser("pair-template"); p.add_argument("--out", required=True); p.add_argument("--n", type=int, default=60)
     p = sub.add_parser("ablation"); p.add_argument("--out", required=True); p.add_argument("--labels", required=True)
     p = sub.add_parser("label-kit"); p.add_argument("runs", nargs="+"); p.add_argument("--html", default="label_kit.html")
@@ -225,7 +275,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     return {"extract-f1": cmd_extract_f1, "render-audit": cmd_render_audit, "soft404": cmd_soft404,
             "judge": cmd_judge, "label-template": cmd_label_template, "determinism": cmd_determinism,
-            "pair-template": cmd_pair_template, "ablation": cmd_ablation, "label-kit": cmd_label_kit}[a.cmd](a) or 0
+            "pair-template": cmd_pair_template, "ablation": cmd_ablation, "label-kit": cmd_label_kit, "diff-runs": cmd_diff_runs}[a.cmd](a) or 0
 
 
 if __name__ == "__main__":
