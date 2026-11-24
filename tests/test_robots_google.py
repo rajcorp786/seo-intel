@@ -1,5 +1,5 @@
 """Port of google/robotstxt robots_test.cc (matching behaviour tests)."""
-from seo_intel.robots import (get_path_params_query, is_user_agent_allowed as A,
+from seo_intel.robots import (get_path_params_query, is_user_agent_allowed as A, parse_report,
                               is_valid_user_agent_to_obey, maybe_escape_pattern)
 
 
@@ -253,3 +253,37 @@ def test_maybe_escape_pattern():
     assert maybe_escape_pattern("/a/b/c") == "/a/b/c"
     assert maybe_escape_pattern("/á") == "/%C3%A1"
     assert maybe_escape_pattern("%aa") == "%AA"
+
+
+# ---- reporting tests (RobotsStatsReporter in robots_test.cc) ----
+def test_lines_numbers_are_counted_correctly():
+    files = [
+        "User-Agent: foo\nAllow: /some/path\nUser-Agent: bar\n\n\nDisallow: /\n",            # unix
+        "User-Agent: foo\r\nAllow: /some/path\r\nUser-Agent: bar\r\n\r\n\r\nDisallow: /\r\n",  # dos
+        "User-Agent: foo\rAllow: /some/path\rUser-Agent: bar\r\r\rDisallow: /\r",             # mac
+        "User-Agent: foo\nAllow: /some/path\nUser-Agent: bar\n\n\nDisallow: /",                # no final newline
+        "User-Agent: foo\nAllow: /some/path\r\nUser-Agent: bar\n\r\n\nDisallow: /",          # mixed
+    ]
+    for f in files:
+        r = parse_report(f)
+        assert r["valid"] == 4 and r["last_line"] == 6, (repr(f), r)
+
+
+def test_utf8_byte_order_mark_is_skipped():
+    for bom in (b"\xef\xbb\xbf", b"\xef\xbb", b"\xef"):
+        r = parse_report(bom + b"User-Agent: foo\nAllow: /AnyValue\n")
+        assert r["valid"] == 2 and r["unknown"] == 0, (bom, r)
+    # broken BOM: the first line becomes garbage ("\x11\xbfUser-Agent") and is an unknown directive
+    r = parse_report(b"\xef\x11\xbfUser-Agent: foo\nAllow: /AnyValue\n")
+    assert r["valid"] == 1 and r["unknown"] == 1, r
+    # a BOM that is not at the start of the file is not skipped
+    r = parse_report(b"User-Agent: foo\n\xef\xbb\xbfAllow: /AnyValue\n")
+    assert r["valid"] == 1 and r["unknown"] == 1, r
+
+
+def test_non_standard_line_example_sitemap():
+    loc = "http://foo.bar/sitemap.xml"
+    body = "User-Agent: foo\nAllow: /some/path\nUser-Agent: bar\n\n\n"
+    assert parse_report(body + "Sitemap: " + loc + "\n")["sitemap"] == loc
+    # a sitemap line may appear anywhere in the file
+    assert parse_report("Sitemap: " + loc + "\n" + body)["sitemap"] == loc

@@ -1,6 +1,7 @@
 """Fast HTML parsing (lxml) for crawl-time fields + render-need signals."""
 from __future__ import annotations
 
+import json
 import re
 
 from lxml import html as LH
@@ -62,10 +63,45 @@ def _in_dropped(el):
     return False
 
 
+def _ld_types(node, acc, depth=0):
+    if depth > 6 or len(acc) > 40:
+        return
+    if isinstance(node, list):
+        for x in node[:50]:
+            _ld_types(x, acc, depth + 1)
+    elif isinstance(node, dict):
+        t = node.get("@type")
+        for x in (t if isinstance(t, list) else [t]):
+            if isinstance(x, str) and x:
+                acc.add(x.rsplit("/", 1)[-1].rsplit(":", 1)[-1][:40])
+        for k in ("@graph", "mainEntity", "itemListElement", "item", "offers"):
+            if k in node:
+                _ld_types(node[k], acc, depth + 1)
+
+
+def schema_types(tree):
+    """schema.org types a page declares (JSON-LD @type incl. @graph / mainEntity, microdata itemtype) and its
+    og:type as 'og:<type>'. Sorted, so the stored value never depends on markup order."""
+    acc = set()
+    for sc in tree.iter("script"):
+        if (sc.get("type") or "").lower().strip() == "application/ld+json" and sc.text:
+            try:
+                _ld_types(json.loads(sc.text.strip().rstrip(";")), acc)
+            except (ValueError, RecursionError):
+                continue
+    for el in tree.xpath("//*[@itemtype]")[:100]:
+        for t in (el.get("itemtype") or "").split():
+            acc.add(t.rstrip("/").rsplit("/", 1)[-1][:40])
+    for m in tree.iter("meta"):
+        if (m.get("property") or "").lower() == "og:type" and m.get("content"):
+            acc.add("og:" + m.get("content").strip().lower()[:30])
+    return sorted(a for a in acc if a)
+
+
 def parse_page(html_text: str, url: str):
     """Return dict with SEO fields + raw outlinks [(href, anchor)] + render signals."""
     out = {"title": None, "h1": None, "meta_robots": None, "canonical": None, "meta_refresh": None,
-           "js_redirect": None, "hreflang": [], "lang": None, "links": [], "signals": {}}
+           "js_redirect": None, "hreflang": [], "lang": None, "links": [], "signals": {}, "schema": []}
     tree = to_tree(html_text)
     if tree is None:
         out["signals"] = {"text_len": 0, "scripts": 0, "framework": False, "noscript_js": False,
@@ -100,6 +136,7 @@ def parse_page(html_text: str, url: str):
             out["canonical"] = l.get("href").strip()
         if "alternate" in rel and l.get("hreflang") and l.get("href"):
             out["hreflang"].append((l.get("hreflang").strip().lower(), l.get("href").strip()))
+    out["schema"] = schema_types(tree)
     scripts = 0
     for s in tree.iter("script"):
         scripts += 1

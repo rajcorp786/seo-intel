@@ -156,3 +156,60 @@ def test_site_scope():
     assert site_scope("example.co.in") == "example.co.in"
     assert site_scope("docs.djangoproject.com") == "docs.djangoproject.com"
     assert site_scope("www.docs.example.com") == "docs.example.com"
+
+
+def test_template_gate_no_deadlock_on_retries():
+    t = TrapDetector()
+    urls = [f"https://e.com/item?id={i}" for i in range(20)]
+    for u in urls[:12]:
+        assert t.gate(u) == "ok"
+        t.dispatched(u)
+    assert t.gate(urls[12]) == "wait"
+    # all 12 samples failed with 429 and were never observed -> forced verdict, crawl continues
+    assert t.force_judgement() is True
+    assert t.gate(urls[12]) == "ok"
+
+
+def test_schema_types_jsonld_microdata_og():
+    from seo_intel.parse import parse_page
+    html = ("<html><head><script type='application/ld+json'>{\"@context\":\"https://schema.org\",\"@graph\":"
+            "[{\"@type\":\"WebSite\"},{\"@type\":[\"Product\",\"IndividualProduct\"],\"offers\":{\"@type\":\"Offer\"}}]}"
+            "</script><script type='application/ld+json'>{broken json</script>"
+            "<meta property='og:type' content='Product'></head><body>"
+            "<div itemscope itemtype='https://schema.org/FAQPage'></div></body></html>")
+    f, _ = parse_page(html, "https://e.com/x")
+    assert f["schema"] == ["FAQPage", "IndividualProduct", "Offer", "Product", "WebSite", "og:product"]
+
+
+def test_intent_uses_schema_types():
+    from seo_intel.topics import classify_intent, intent_scores
+    p = {"url": "https://e.com/lifts/model-x", "title": "Model X", "h1": "Model X", "main_text": "A lift.",
+         "word_count": 200}
+    assert classify_intent(intent_scores(p, [], 0, 0.0, ["Product", "Offer", "WebSite"]))[0] == "transactional"
+    assert classify_intent(intent_scores(p, [], 0, 0.0, ["BlogPosting"]))[0] == "informational"
+    assert classify_intent(intent_scores(p, [], 0, 0.0, ["ContactPage"]))[0] == "navigational"
+    # site-wide types alone change nothing
+    assert intent_scores(p, [], 0, 0.0, ["WebSite", "Organization", "BreadcrumbList"]) == intent_scores(p, [], 0, 0.0)
+
+
+def test_home_lift_title_is_not_navigational():
+    from seo_intel.topics import classify_intent, intent_scores
+    p = {"url": "https://e.com/x/home-lift-price-basics/", "title": "Home lift price basics", "h1": None,
+         "main_text": "", "word_count": 300}
+    assert intent_scores(p, [], 0, 0.0)["navigational"] == 0
+    q = dict(p, url="https://e.com/x/", title="Home | Target Lifts")
+    assert classify_intent(intent_scores(q, [], 0, 0.0))[0] == "navigational"
+
+
+def test_anchor_never_shared_between_sibling_pages_and_widen_fallback():
+    from seo_intel import linkopt
+    pages = [{"url": f"https://e.com/model-{i}/", "title": f"Home Lift Model {i}", "h1": None} for i in range(4)]
+    needed = {("home", "lift"): pages[2]["url"], ("lift", "model", "2"): pages[2]["url"]}
+    bad = linkopt.ambiguous_grams(needed, pages)
+    assert ("home", "lift") in bad and ("lift", "model", "2") not in bad
+    text = "Every home lift needs a pit and a yearly service plan here."
+    phrases = [["home", "lift", "model", "2"]]
+    assert linkopt.find_anchor(text, phrases, {"2"}, banned=bad) is None
+    r = linkopt.find_anchor(text, phrases, {"2"}, banned=bad, rewrite_phrases=[("home", "lift", "model", "2")])
+    assert r[1] == "home lift" and r[3] == "home lift model 2"
+    assert r[4] == "Every home lift model 2 needs a pit and a yearly service plan here."

@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import heapq
 import json
+import zlib
 import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -19,6 +20,13 @@ from .urlnorm import host_of, is_asset, netloc_of, normalize, reg_domain, site_s
 
 
 MAX_RETRIES = 4
+# pages per site = rate x crawl seconds x this; leaves room for redirects, robots, sitemaps, renders and
+# back-off, so a normal site is fully crawled to the cap BEFORE the deadline (a deadline cut is timing-dependent)
+PAGE_EFFICIENCY = 0.75
+HUB_SHARE = 2          # % of known pages (by in-links) re-checked on every incremental run
+HUB_MIN = 10
+RENDER_AUDIT_N = 4     # renders kept for the automatic render-recall audit
+REFRESH_ROTATION = 20  # 1 in 20 other pages re-checked per incremental run (each page within ~20 runs)
 
 
 def sha(s) -> str:
@@ -53,12 +61,17 @@ class SiteCrawl:
         self.policy = RenderPolicy()
         self.render_q = []
         self.render_seq = 0
-        self.inflight = set()
+        self.inflight = {}          # url -> depth
+        self.observed = set()       # urls whose trap-sample observation is recorded
+        self.retrying = set()       # urls re-queued after 429/503
+        self.dispatched_urls = set()
+        self.page_cap = cfg.max_pages
         self.n_html = self.n_rendered = self.n_requests_pages = 0
         self.trap_fetches = 0
         self.trap_avoided = 0
         self.run = 0
         self.mode = "fresh"
+        self.refresh_set = set()
         self.retries = {}
 
     # ------------------------------------------------------------ helpers
@@ -121,17 +134,20 @@ class SiteCrawl:
             self.mode = "incremental"
             self.run += 1
             st.snapshot_previous(self.role)
+            self.refresh_set = self.pick_refresh_set()
             first = st.get_meta(f"first_run_seconds:{self.role}")
             if first:
                 self.deadline = min(self.deadline, time.monotonic() + max(30.0, 0.08 * first))
         else:
             self.run = 1
+        crawl_budget_s = self.cfg.time_budget_min * 60 * self.cfg.crawl_share
+        self.page_cap = int(min(self.cfg.max_pages, max(50, self.cfg.rate * crawl_budget_s * PAGE_EFFICIENCY)))
         st.set_meta(f"run:{self.role}", self.run)
         st.set_meta(f"state:{self.role}", "running")
         st.set_meta(f"mode:{self.role}", self.mode)
         st.set_meta(f"start_url:{self.role}", self.start_url)
         t0 = time.monotonic()
-        self.log(f"[{self.role}] {self.mode} crawl of {self.start_url} (run {self.run})")
+        self.log(f"[{self.role}] {self.mode} crawl of {self.start_url} (run {self.run}, page cap {self.page_cap})")
 
         if self.mode == "resume":
             self.replay_traps()
@@ -166,6 +182,7 @@ class SiteCrawl:
         t_front = time.monotonic()
         await self.drain_renders(final=True)
         await self.template_probe_phase()
+        await self.render_audit()
         self.log(f"[{self.role}] phases: seed {t_seed - t0:.1f}s, frontier {t_front - t_seed:.1f}s, "
                  f"render {time.monotonic() - t_front:.1f}s")
 
@@ -219,46 +236,75 @@ class SiteCrawl:
         probe = f"{self.start_url.rstrip('/')}/seo-intel-probe-{sha(self.domain)[:10]}-does-not-exist"
         if not self.allowed_sync(probe):
             return
-        r = await self.f.fetch(probe, same_site=self.same_site)
-        st = r.get("status")
-        self.store.set_meta(f"probe404:{self.role}", {"url": probe, "status": st if isinstance(st, int) else str(st),
-                                                    "html": decode(r.get("body") or b"", r.get("encoding"))[:300000]
-                                                    if st == 200 else None})
+        # probe B has a different shape (deeper path, .html): the soft-404 self-test checks that the
+        # fingerprint learned from probe A recognises it
+        probe_b = f"{self.start_url.rstrip('/')}/seo-intel-check/{sha(self.domain)[10:20]}-missing-page.html"
+        for key, u in ((f"probe404:{self.role}", probe), (f"probe404b:{self.role}", probe_b)):
+            if not self.allowed_sync(u):
+                continue
+            r = await self.f.fetch(u, same_site=self.same_site)
+            st = r.get("status")
+            self.store.set_meta(key, {"url": u, "status": st if isinstance(st, int) else str(st),
+                                      "html": decode(r.get("body") or b"", r.get("encoding"))[:300000]
+                                      if st == 200 else None})
 
     async def frontier_loop(self):
+        """Deterministic BFS: one depth level at a time, URLs of a level in a fixed hash order, a page cap
+        fixed from the time budget, trap and render decisions taken on fixed samples. Two runs on the same
+        site therefore fetch the same pages in the same order unless the deadline itself cuts the crawl."""
         st = self.store
         workers = self.cfg.concurrency
         pending = set()
-        render_task = None
-        while True:
-            done_pages = st.count("SELECT COUNT(*) FROM pages WHERE site=? AND run=?", (self.role, self.run))
-            if not self.deadline_ok() or done_pages + len(pending) >= self.cfg.max_pages:
-                break
-            room = workers - len(pending)
-            batch = st.next_batch(self.role, room, self.run, self.inflight) if room > 0 else []
-            for row in batch:
-                self.inflight.add(row[0])
-                pending.add(asyncio.ensure_future(self.process(row[0], row[1], row[3])))
-            if render_task is None or render_task.done():
-                if self.render_q and self.render_budget() > 0:
-                    render_task = asyncio.ensure_future(self.drain_renders())
+        level = None
+        while self.deadline_ok():
+            qmin = st.min_queued_depth(self.role, self.run)
             if not pending:
-                if render_task and not render_task.done():
-                    await render_task
-                    continue
-                break
+                if level is not None and (qmin is None or qmin > level):
+                    await self.level_boundary()
+                    qmin = st.min_queued_depth(self.role, self.run)
+                if qmin is None:
+                    break
+                level = qmin
+            done_pages = st.count("SELECT COUNT(*) FROM pages WHERE site=? AND run=?", (self.role, self.run))
+            cap_left = self.page_cap - done_pages - 2 * len(pending)  # a redirect can add 2 rows
+            room = min(workers - len(pending), cap_left)
+            if room > 0 and qmin == level:
+                rows = st.next_batch(self.role, room * 4 + 16, self.run, self.inflight, depth=level)
+                for row in rows:
+                    if room <= 0:
+                        break
+                    u = row[0]
+                    g = self.traps.gate(u)
+                    if g == "wait" and u in self.dispatched_urls:
+                        g = "ok"  # one of the template's own samples coming back after a 429 retry
+                    if g == "wait":
+                        continue  # its template's samples are still being judged
+                    if g != "ok":
+                        st.add_trap(self.role, g[0], g[1], u)
+                        st.mark(u, "trap", g[0])
+                        self.trap_avoided += 1
+                        continue
+                    if u not in self.dispatched_urls:
+                        self.dispatched_urls.add(u)
+                        self.traps.dispatched(u)
+                    self.inflight[u] = row[1]
+                    pending.add(asyncio.ensure_future(self.process(u, row[1], row[3])))
+                    room -= 1
+            if not pending:
+                if cap_left > 0 and qmin == level and self.traps.force_judgement():
+                    continue  # every sample of a waiting template is done: verdict taken, go on
+                if cap_left <= 0 or qmin is None or qmin == level:
+                    break  # page cap reached, or nothing dispatchable at this level
+                continue
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED,
                                                timeout=max(0.1, self.deadline - time.monotonic()))
             for d in done:
-                exc = d.exception()
-                if exc:
+                if not d.cancelled() and d.exception():
+                    exc = d.exception()
                     self.log(f"[{self.role}] worker error: {type(exc).__name__}: {exc}")
-        stragglers = set(pending)
-        if render_task and not render_task.done():
-            if self.deadline_ok():
-                await asyncio.wait([render_task], timeout=max(1.0, self.deadline - time.monotonic()))
-            stragglers.add(render_task)
-        stragglers = {t for t in stragglers if not t.done()}
+        if self.deadline_ok() and not pending:
+            await self.level_boundary()
+        stragglers = {t for t in pending if not t.done()}
         if stragglers:
             # deadline: cancel in-flight work; their URLs stay 'queued' => no lost work on resume.
             # Wait at most 10 s for cancellation, never indefinitely.
@@ -266,10 +312,37 @@ class SiteCrawl:
                 t.cancel()
             await asyncio.wait(stragglers, timeout=10)
 
+    async def level_boundary(self):
+        """End of a BFS level: render the queued pages in a fixed order within the 15% budget."""
+        await self.drain_renders(final=True)
+
     # ------------------------------------------------------------ one URL
+    def _observe(self, url, h):
+        if url in self.observed:
+            return
+        self.observed.add(url)
+        trap = self.traps.observe(url, h)
+        if trap:
+            self.store.add_trap(self.role, trap[0], trap[1], url)
+            self.trap_fetches += max(0, trap[2] - 1)
+
     async def process(self, url, depth, lastmod):
-        st = self.store
+        outcome = "done"
         try:
+            await self._process(url, depth, lastmod)
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            self.inflight.pop(url, None)
+            if url in self.retrying:
+                self.retrying.discard(url)
+            elif outcome == "done":
+                self._observe(url, None)  # non-HTML outcomes still count as a (unique) template sample
+
+    async def _process(self, url, depth, lastmod):
+        st = self.store
+        if True:
             host = netloc_of(url)
             rb = await self.robots_for(url)
             while rb is None:
@@ -301,6 +374,7 @@ class SiteCrawl:
                 self.f.limiter.penalize(host_of(url), (r.get("headers") or {}).get("retry-after"))
                 if n < MAX_RETRIES:
                     self.retries[url] = n + 1
+                    self.retrying.add(url)
                     return  # stays 'queued': fetched again after the host's back-off
             
             if r.get("status") == 304 and prev is not None:
@@ -308,28 +382,54 @@ class SiteCrawl:
                 st.update_page(url, etag=r["headers"].get("etag") or prev["etag"])
                 return
             await self.handle_response(url, depth, lastmod, r)
-        finally:
-            self.inflight.discard(url)
+
+    def pick_refresh_set(self):
+        """Pages an incremental run re-checks even without a newer sitemap <lastmod>: the start page, the
+        most-linked pages (hubs / nav pages: where new links show up), and a rotating 1-in-REFRESH_ROTATION
+        sample keyed on the run number, so every page is re-checked within REFRESH_ROTATION runs."""
+        st = self.store
+        n = st.count("SELECT COUNT(*) FROM pages WHERE site=? AND status=200", (self.role,))
+        k = max(HUB_MIN, -(-n * HUB_SHARE // 100))
+        hubs = [r[0] for r in st.db.execute(
+            """SELECT l.dst, COUNT(DISTINCT l.src) c FROM links l JOIN pages p ON p.url=l.dst
+               WHERE p.site=? AND p.status=200 GROUP BY l.dst ORDER BY c DESC, l.dst LIMIT ?""", (self.role, k))]
+        rot = {u for (u,) in st.db.execute("SELECT url FROM pages WHERE site=? ORDER BY url", (self.role,))
+               if int(sha(f"{self.run}:{u}")[:8], 16) % REFRESH_ROTATION == 0}
+        return {self.start_url} | set(hubs) | rot
 
     def can_skip(self, prev, depth, lastmod):
         if prev["status"] != 200:
             return False
-        if depth is not None and depth <= 1:
+        if depth == 0 or prev["url"] in self.refresh_set:
             return False
+        row = self.store.db.execute("SELECT fetched_at, lastmod FROM pages WHERE url=?", (prev["url"],)).fetchone()
+        if not row:
+            return False
+        if (lastmod or None) != (row[1] or None):
+            return False  # sitemap <lastmod> changed since the last fetch (or appeared / disappeared)
         lm = _parse_date(lastmod)
-        if lm is not None:
-            row = self.store.db.execute("SELECT fetched_at FROM pages WHERE url=?", (prev["url"],)).fetchone()
-            return bool(row and row[0] and lm <= row[0])
-        return True
+        return not (lm is not None and row[0] and lm > row[0])
 
     def carry_over(self, url, depth):
+        """An unchanged page: keep the stored copy, but replay exactly what a fetch would have done with it
+        (outlinks incl. nofollow / meta-robots rules, canonical / refresh targets, session-id records,
+        the template-trap sample) so an incremental run decides the same as a fresh crawl."""
         st = self.store
         st.db.execute("BEGIN")
         st.db.execute("UPDATE pages SET run=?, unchanged=1 WHERE url=?", (self.run, url))
         st.db.execute("UPDATE urls SET state='done' WHERE url=?", (url,))
         st.db.execute("COMMIT")
-        dsts = [r[0] for r in st.db.execute("SELECT DISTINCT dst FROM links WHERE src=? ORDER BY dst", (url,))]
-        self.enqueue([(d, (depth or 0) + 1, 100.0 - 10 * ((depth or 0) + 1), None) for d in dsts], url)
+        r = st.db.execute("SELECT html, x_robots, vhash, raw_hash FROM pages WHERE url=?", (url,)).fetchone()
+        if not r or r[0] is None:
+            return
+        html = zlib.decompress(r[0]).decode("utf-8", "replace")
+        self.n_html += 1
+        fields, _ = P.parse_page(html, url)
+        row = {"x_robots": r[1]}
+        links = self.apply_fields(row, fields, url)
+        st.db.execute("UPDATE pages SET schema_types=? WHERE url=?", (row["schema_types"], url))
+        self.enqueue_links(url, depth, links, row)
+        self._observe(url, r[2] or r[3])
 
     async def handle_response(self, url, depth, lastmod, r):
         st = self.store
@@ -347,19 +447,9 @@ class SiteCrawl:
             row["html"] = None
             st.save_page(row, [])
             if isinstance(status, int) and final != url and self.same_site(final):
-                # the redirect target response is already in hand: store it once
-                known = st.db.execute("SELECT state FROM urls WHERE url=?", (final,)).fetchone()
+                # the target is fetched in its own turn of the fixed crawl order (storing it here would
+                # depend on which task happened to finish first)
                 self.enqueue([(final, depth, 90.0, None)], url)
-                if known is None or known[0] == "queued":
-                    ok = st.db.execute("SELECT 1 FROM urls WHERE url=?", (final,)).fetchone()
-                    if ok and self.allowed_sync(final) and final not in self.inflight:
-                        self.inflight.add(final)
-                        try:
-                            r2 = dict(r)
-                            r2["chain"] = []
-                            await self.handle_response(final, depth, None, r2)
-                        finally:
-                            self.inflight.discard(final)
             return
         row["status"] = status if isinstance(status, int) else None
         if status is None or not isinstance(status, int):
@@ -387,10 +477,7 @@ class SiteCrawl:
         self.enqueue_links(url, depth, links, row)
         tpl_hash = sha(P.visible_text(P.to_tree(html))[:20000]) if fields["signals"]["text_len"] else row["raw_hash"]
         st.db.execute("UPDATE pages SET vhash=? WHERE url=?", (tpl_hash, url))
-        trap = self.traps.observe(url, tpl_hash)
-        if trap:
-            st.add_trap(self.role, trap[0], trap[1], url)
-            self.trap_fetches += max(0, trap[2] - 1)
+        self._observe(url, tpl_hash)
         if reason:
             name, pr = reason
             st.db.execute("UPDATE pages SET render_reason=? WHERE url=?", (f"pending:{name}:{pr}", url))
@@ -406,6 +493,7 @@ class SiteCrawl:
         row["meta_refresh"] = normalize(fields["meta_refresh"], url)[0] if fields["meta_refresh"] else None
         row["js_redirect"] = normalize(fields["js_redirect"], url)[0] if fields["js_redirect"] else None
         row["hreflang"] = json.dumps([(l, normalize(h, url)[0]) for l, h in fields["hreflang"]])
+        row["schema_types"] = ",".join(fields.get("schema") or []) or None
         links = []
         for i, (href, anchor, nofollow) in enumerate(fields["links"]):
             u, sess = normalize(href, url)
@@ -431,15 +519,44 @@ class SiteCrawl:
         self.enqueue(items, url)
 
     # ------------------------------------------------------------ rendering
-    def render_budget(self):
-        return int(RENDER_SHARE * self.n_html) - self.n_rendered
+    def render_budget(self, audit=False):
+        """Renders still allowed (15% cap). RENDER_AUDIT_N of them are kept for the recall audit."""
+        return int(RENDER_SHARE * self.n_html) - self.n_rendered - (0 if audit else RENDER_AUDIT_N)
+
+    async def render_audit(self):
+        """Automatic render-recall check: render a fixed hash-ordered sample of script-bearing pages the
+        policy chose NOT to render. A sampled page whose text grows by > DIFF_THRESHOLD is a missed render;
+        the miss rate on the sample estimates how many such pages the rest of the site holds."""
+        if not self.renderer.available:
+            return
+        from .render import DIFF_THRESHOLD
+        pool = sorted((u for (u,) in self.store.db.execute(
+            "SELECT url FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND rendered=0 AND scripts>0 "
+            "AND run=? AND (unchanged=0 OR ?=0)", (self.role, self.run, int(self.mode == "incremental")))), key=sha)
+        st = self.store
+        if self.mode == "incremental" and not pool:
+            return  # nothing new to audit: the last run's audit still describes the stored pages
+        st.stat(self.role, "render_audit_pool", len(pool))
+        sample = pool[:max(0, min(RENDER_AUDIT_N, self.render_budget(audit=True)))]
+        missed = 0
+        n_par = max(1, self.renderer.n)
+        done = 0
+        for i in range(0, len(sample), n_par):
+            if not self.deadline_ok():
+                break
+            part = sample[i:i + n_par]
+            gains = await asyncio.gather(*(self.render_one(u, "audit") for u in part))
+            done += len(part)
+            missed += sum(1 for g in gains if g is not None and g > DIFF_THRESHOLD)
+        st.stat(self.role, "render_audit_sampled", done)
+        st.stat(self.role, "render_audit_missed", missed)
 
     async def drain_renders(self, final=False):
+        n_par = max(1, self.renderer.n)
         while self.render_q and self.render_budget() > 0 and self.deadline_ok():
-            _, url, _, reason = heapq.heappop(self.render_q)
-            await self.render_one(url, reason)
-            if not final:
-                await asyncio.sleep(0)
+            take = min(n_par, self.render_budget(), len(self.render_q))
+            part = [heapq.heappop(self.render_q) for _ in range(take)]
+            await asyncio.gather(*(self.render_one(url, reason) for _, url, _, reason in part))
 
     async def template_probe_phase(self):
         """Deterministic per-template probing after the crawl (see render.py)."""
@@ -448,10 +565,16 @@ class SiteCrawl:
         from collections import defaultdict
         from .urlnorm import section_template as template
         by_tpl = defaultdict(list)
+        inc = self.mode == "incremental"
+        known = self.store.get_meta(f"template_js:{self.role}", {}) if inc else {}
         for (u,) in self.store.db.execute(
                 "SELECT url FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND rendered=0 AND scripts>0 "
-                "AND run=? ORDER BY url", (self.role, self.run)):
+                "AND run=? AND (unchanged=0 OR ?=0) ORDER BY url", (self.role, self.run, int(inc))):
             by_tpl[template(u)].append(u)
+        # incremental: unchanged pages keep last run's render result; sections probed last time keep their
+        # verdict (only pages fetched again are rendered when the section needs it)
+        for tpl, js in known.items():
+            self.policy.template_js.setdefault(tpl, js)
         from .render import PROBES_PER_TEMPLATE
         n_par = max(1, self.renderer.n)
 
@@ -471,16 +594,23 @@ class SiteCrawl:
 
         for tpl in sorted(by_tpl):
             urls = sorted(by_tpl[tpl], key=lambda u: sha(u))
+            if tpl in known:
+                if known[tpl]:
+                    _, ok = await batch(urls, "template_js")
+                    if not ok:
+                        break
+                continue
             res, ok = await batch(urls[:PROBES_PER_TEMPLATE], "probe")
             for u, g in res:
                 if g is not None:
                     self.policy.learn(u, g)
             if not ok:
-                return
+                break
             if self.policy.template_js.get(tpl):
                 _, ok = await batch(urls[PROBES_PER_TEMPLATE:], "template_js")
                 if not ok:
-                    return
+                    break
+        self.store.set_meta(f"template_js:{self.role}", dict(sorted(self.policy.template_js.items())))
 
     async def render_one(self, url, reason):
         """Render one stored page; update fields/links if rendering changed it. Returns token gain."""

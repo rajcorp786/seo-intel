@@ -190,6 +190,28 @@ def run_all(store, cfg, log, llm):
     return ctx
 
 
+def _soft404_self_test(st, site, model, ptoks, probe):
+    """Second, differently-shaped missing URL: a site that answers it with a proper 404 is fine; one that
+    answers 200 must be flagged by the classifier using probe A's fingerprint, or the check fails."""
+    b = st.get_meta(f"probe404b:{site}") or {}
+    if not b:
+        return {"result": "not run"}
+    out = {"url": b.get("url"), "status": b.get("status")}
+    if b.get("status") in (404, 410):
+        out["result"] = "pass: the site returns a real 404 for missing pages"
+    elif b.get("status") == 200 and b.get("html") and model:
+        tree = P.to_tree(b["html"])
+        main, _ = extract.extract(tree, model)
+        f, _ = P.parse_page(b["html"], b["url"])
+        page = {"url": b["url"], "title": f["title"], "h1": f["h1"], "main_text": main}
+        r = soft404.classify(page, ptoks, False)
+        out["result"] = "pass: detected as soft 404" if r else "FAIL: a missing page answered 200 and was not flagged"
+        out["reason"] = r
+    else:
+        out["result"] = f"pass: status {b.get('status')} (not an indexable 200)"
+    return out
+
+
 def stage_soft404(ctx, models):
     st = ctx.store
     n = 0
@@ -211,6 +233,7 @@ def stage_soft404(ctx, models):
         st.db.executemany("UPDATE pages SET soft404=?, soft404_reason=? WHERE url=?", res)
         st.db.execute("COMMIT")
         ctx.results[f"probe404_{site}"] = {"url": probe.get("url"), "status": probe.get("status")}
+        ctx.results[f"soft404_self_test_{site}"] = _soft404_self_test(st, site, models.get(site), ptoks, probe)
     ctx.log(f"soft-404: {n} pages flagged")
 
 
@@ -345,15 +368,17 @@ def stage_topics(ctx):
 
 def stage_intents(ctx):
     st = ctx.store
-    rows = st.db.execute("SELECT url, site, title, h1, substr(main_text, 1, 4000) AS main_text, word_count FROM pages "
-                         "WHERE status=200 AND html IS NOT NULL AND soft404=0 ORDER BY url")
+    nout = dict(st.db.execute("SELECT src, COUNT(DISTINCT dst) FROM links WHERE block='content' GROUP BY src"))
+    rows = st.db.execute("SELECT url, site, title, h1, substr(main_text, 1, 4000) AS main_text, word_count, "
+                         "schema_types FROM pages WHERE status=200 AND html IS NOT NULL AND soft404=0 ORDER BY url")
     low = []
     n_rows = 0
     for p in rows:
         n_rows += 1
         g = ctx.graphinfo.get(p["url"], {})
-        outr = 0.0
-        sc = topics.intent_scores(p, ctx.anchors.get(p["url"], []), g.get("content_inlinks", 0), outr)
+        outr = 100.0 * nout.get(p["url"], 0) / max(50, p["word_count"] or 0)
+        schema = (p["schema_types"] or "").split(",") if p["schema_types"] else []
+        sc = topics.intent_scores(p, ctx.anchors.get(p["url"], []), g.get("content_inlinks", 0), outr, schema)
         it, margin = topics.classify_intent(sc)
         ctx.intents[p["url"]] = (it, margin, "rules")
         low.append((margin, p["url"]))
@@ -480,18 +505,52 @@ def stage_links(ctx):
     cands = []
     site_pages = [dict(ctx.page(u)) for u in eligible]
     common = cannibal.common_title_words(site_pages)
+    from .textnorm import tokens as _tk
+    per_target = {}
+    needed = {}
+    shared = set()
     for t in pri:
         if t not in ctx.zi:
             continue
-        tz = ctx.Z[ctx.zi[t]]
-        sims = ctx.Z[E] @ tz
-        order = np.lexsort((np.arange(len(E)), -sims))[:linkopt.SOURCES_PER_TARGET]
         tp = ctx.page(t)
         terms = space.top_terms(ctx.zi[t], 8) if space.X is not None else []
         phrases = linkopt.target_phrases(dict(tp), terms, ctx.anchors.get(t, []))
-        from .textnorm import tokens as _tk
         all_words = set(_tk(f"{tp['title'] or ''} {tp['h1'] or ''}", drop_stop=True))
-        title_words = (all_words - common) or all_words
+        all_words |= {m.group(0) for m in linkopt.TOKEN_I.finditer(f"{tp['title'] or ''} {tp['h1'] or ''}")
+                      if m.group(0).isdigit()}
+        # a distinctive word names THIS page (site-wide title words excluded); a number such as the
+        # '3' of 'model 3' counts, since it is what tells sibling pages apart
+        title_words = all_words - common
+        per_target[t] = (phrases, title_words, [])
+        for seq in phrases:
+            for L in range(2, 7):
+                for i in range(len(seq) - L + 1):
+                    gk = tuple(seq[i:i + L])
+                    if needed.setdefault(gk, t) != t:
+                        shared.add(gk)  # a phrase of two priority pages names neither of them
+    banned = linkopt.ambiguous_grams(needed, site_pages) | shared
+    for t, (phrases, title_words, full) in per_target.items():
+        # shortest title/H1 phrases that name only this page (used to widen a partial anchor)
+        opts = set()
+        for seq in phrases[:2] + phrases[2:4]:
+            for L in range(2, 7):
+                for i in range(len(seq) - L + 1):
+                    gk = tuple(seq[i:i + L])
+                    if gk not in banned and gk[0] not in linkopt.STOP and gk[-1] not in linkopt.STOP \
+                            and any(x in title_words for x in gk):
+                        opts.add(gk)
+        whole = {tuple(seq) for seq in phrases[:4]}
+        full.extend(sorted(opts, key=lambda x: (x not in whole, len(x), x))[:3])  # a whole H1 / title segment first
+    best_per_sentence = {}
+    for t in pri:
+        if t not in per_target:
+            continue
+        phrases, title_words, full = per_target[t]
+        if not title_words:
+            continue  # nothing tells this page apart from its siblings: no unambiguous anchor exists
+        tz = ctx.Z[ctx.zi[t]]
+        sims = ctx.Z[E] @ tz
+        order = np.lexsort((np.arange(len(E)), -sims))[:linkopt.SOURCES_PER_TARGET]
         for j in order:
             if sims[j] < linkopt.REL_MIN:
                 break
@@ -501,11 +560,20 @@ def stage_links(ctx):
             mt = ctx.page_field(s, "main_text") or ""
             ex = [r[0] for r in ctx.store.db.execute("SELECT anchor FROM links WHERE src=? AND block='content'", (s,))]
             sp_ = ctx.page(s)
-            fa = linkopt.find_anchor(mt, phrases, title_words, ex, (sp_["title"], sp_["h1"]))
+            fa = linkopt.find_anchor(mt, phrases, title_words, ex, (sp_["title"], sp_["h1"]), banned, full)
             if not fa:
                 continue
-            cands.append((g.idx[s], g.idx[t], {"source": s, "target": t, "sentence": fa[0], "anchor": fa[1],
-                                               "relevance": round(float(sims[j]), 3)}))
+            meta = {"source": s, "target": t, "sentence": fa[0], "anchor": fa[1],
+                    "relevance": round(float(sims[j]), 3), "anchor_mode": "exact"}
+            if len(fa) == 5:
+                meta.update(anchor_mode="widen", anchor=fa[3], replaces=fa[1], suggested_sentence=fa[4])
+            c = (g.idx[s], g.idx[t], meta)
+            key = (s, fa[0])  # one sentence carries at most one new link: keep the most relevant target
+            old = best_per_sentence.get(key)
+            rank = lambda m: (m["anchor_mode"] != "exact", -m["relevance"], m["target"])
+            if old is None or rank(c[2]) < rank(old[2]):
+                best_per_sentence[key] = c
+    cands = [best_per_sentence[k] for k in sorted(best_per_sentence)]
     cands.sort(key=lambda c: (c[0], c[1]))
     base_pr = g.pagerank()
     chosen, Wn = linkopt.greedy(g.W, pri_idx, cands, cfg.k)

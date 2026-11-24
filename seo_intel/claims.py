@@ -80,6 +80,12 @@ class Verifier:
             mt = ctx.page_field(c["url"], "main_text") or ""
             ok = c["sentence"] in mt and c["value"] and c["value"] in c["sentence"]
             return c["value"] if ok else None
+        if k == "title_phrase":
+            import re as _re
+            toks = lambda x: " ".join(_re.findall(r"\w+", (x or "").lower()))
+            p = ctx.page(c["url"])
+            hay = f" {toks(p['title'])} | {toks(p['h1'])} " if p else ""
+            return c["value"] if c["value"] and f" {toks(c['value'])} " in hay else None
         if k == "chain":
             return ctx.chain(c["url"], c["metric"])
         if k == "gap":

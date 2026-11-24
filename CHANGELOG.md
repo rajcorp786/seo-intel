@@ -2,6 +2,18 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.1 (2026-11-24): toward the full brief
+| Area | What changed | How it was checked |
+|---|---|---|
+| Repeatability | Deterministic BFS crawl order, fixed page cap, sample-based template-trap verdicts; fixed a retry/gate stall | 3 capped + 4 full runs with random server latency identical; e2e with 429s identical |
+| Incremental | Re-fetch only start page, hubs, changed `<lastmod>`, new URLs, 1-in-20 rotation; reused pages replayed exactly; render verdicts reused | output = fresh crawl except change report; 8.2 s vs 48.4 s on dev pair; 4/4 planted changes found |
+| Robots | `parse_report()` (valid/unknown lines, line numbers) + 3 more Google reporting tests | 23/23 |
+| Intent | schema.org / og:type signals, link density, fixed "Home …" title false positive | unit tests; 7 posts relabelled correctly |
+| Link plan | Anchors that name only the target; one link per sentence; "widen" suggestions with verified claims | unit tests; mock-agent check 0 false claims |
+| Self-checks | Render-recall audit and soft-404 self-test in every run | `crawl_summary.json → render_recall_audit`, `analysis_summary.json → soft404_self_test_*` |
+| Store | Old `crawl.db` files are migrated (new columns added) | – |
+| Docs | CONTRIBUTING.md; `pip install git+…` line in README | – |
+
 ## 1.0.0 (2026-11-24): first submission
 Development builds r01–r09, each tested on the synthetic dev sites and, from r02 on, on real sites.
 

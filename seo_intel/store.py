@@ -7,6 +7,7 @@ re-fetches it exactly once and nothing is duplicated (links use a PK).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import zlib
@@ -18,7 +19,7 @@ PRAGMA synchronous=NORMAL;
 CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS urls(
   url TEXT PRIMARY KEY, site TEXT, host TEXT, state TEXT, depth INT,
-  priority REAL, src TEXT, sitemap_lastmod TEXT, reason TEXT, seen_run INT DEFAULT 0);
+  priority REAL, src TEXT, sitemap_lastmod TEXT, reason TEXT, seen_run INT DEFAULT 0, ord TEXT);
 CREATE INDEX IF NOT EXISTS urls_q ON urls(site, state, priority);
 CREATE TABLE IF NOT EXISTS pages(
   url TEXT PRIMARY KEY, site TEXT, status INT, final_url TEXT, chain TEXT,
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS pages(
   canonical TEXT, meta_refresh TEXT, js_redirect TEXT, title TEXT, h1 TEXT,
   lang TEXT, hreflang TEXT, depth INT, soft404 INT DEFAULT 0, soft404_reason TEXT,
   main_text TEXT, main_hash TEXT, word_count INT, fetched_at INT, unchanged INT DEFAULT 0,
-  run INT DEFAULT 0, lastmod TEXT, scripts INT DEFAULT 0, vhash TEXT);
+  run INT DEFAULT 0, lastmod TEXT, scripts INT DEFAULT 0, vhash TEXT, schema_types TEXT);
 CREATE INDEX IF NOT EXISTS pages_site ON pages(site);
 CREATE TABLE IF NOT EXISTS prev_pages(
   url TEXT PRIMARY KEY, site TEXT, status INT, final_url TEXT, title TEXT,
@@ -51,6 +52,16 @@ class Store:
         self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        """Older crawl.db files (earlier versions) get the newer columns, so incremental runs keep working."""
+        want = {"urls": [("ord", "TEXT")], "pages": [("vhash", "TEXT"), ("schema_types", "TEXT")]}
+        for table, cols in want.items():
+            have = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
+            for name, typ in cols:
+                if name not in have:
+                    self.db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
     # ---------- meta ----------
     def get_meta(self, k, default=None):
@@ -102,21 +113,31 @@ class Store:
     def add_urls(self, rows, run=0):
         """rows: (url, site, host, depth, priority, src, lastmod). Upsert marks seen in this run."""
         self.db.executemany(
-            """INSERT INTO urls(url,site,host,state,depth,priority,src,sitemap_lastmod,seen_run)
-               VALUES(?,?,?,'queued',?,?,?,?,?)
+            """INSERT INTO urls(url,site,host,state,depth,priority,src,sitemap_lastmod,seen_run,ord)
+               VALUES(?,?,?,'queued',?,?,?,?,?,?)
                ON CONFLICT(url) DO UPDATE SET seen_run=excluded.seen_run,
                  depth=MIN(depth, excluded.depth), priority=MAX(priority, excluded.priority),
                  sitemap_lastmod=COALESCE(excluded.sitemap_lastmod, sitemap_lastmod)""",
-            [r + (run,) for r in rows])
+            [r + (run, hashlib.sha1(r[0].encode("utf-8", "replace")).hexdigest()[:16]) for r in rows])
 
     def mark(self, url, state, reason=None):
         self.db.execute("UPDATE urls SET state=?, reason=? WHERE url=?", (state, reason, url))
 
-    def next_batch(self, site, n, run=0, exclude=()):
+    def next_batch(self, site, n, run=0, exclude=(), depth=None):
+        """Queued URLs of one BFS level in a fixed order (URL hash) - the order never depends on timing."""
+        if depth is None:
+            depth = self.min_queued_depth(site, run)
+            if depth is None:
+                return []
         rows = self.db.execute(
             """SELECT url, depth, host, sitemap_lastmod FROM urls WHERE site=? AND state='queued' AND seen_run=?
-               ORDER BY priority DESC, depth ASC, url ASC LIMIT ?""", (site, run, n + len(exclude))).fetchall()
+               AND depth=? ORDER BY ord, url LIMIT ?""", (site, run, depth, n + len(exclude))).fetchall()
         return [r for r in rows if r[0] not in exclude][:n]
+
+    def min_queued_depth(self, site, run=0):
+        r = self.db.execute("SELECT MIN(depth) FROM urls WHERE site=? AND state='queued' AND seen_run=?",
+                            (site, run)).fetchone()
+        return r[0] if r else None
 
     def count(self, sql, args=()):
         return self.db.execute(sql, args).fetchone()[0]

@@ -13,6 +13,27 @@ Everything below was measured during development on the synthetic dev pair in `d
   shallowest URL of its template is a next/prev chain, so it is a trap.
   Result: **3.68%** of fetches went to trap pages (`report/crawl_summary.json → trap_budget_share`).
 
+**Crawl order: deterministic BFS (v1.0.1).**
+* *Failed:* a priority queue fed by whichever fetch finished first. With random server latency
+  (`server.py --jitter`) the page-capped crawl fetched a different set of pages in 2 of 3 runs.
+* *Now:* one link depth at a time, URLs of a level in fixed URL-hash order, a page cap fixed from the time
+  budget (rate × crawl time × 0.75), template-trap verdicts taken on the first 12 dispatched samples of each
+  template (sorted by URL), and renders drained in heap order at each level boundary. 3 capped and 4 full
+  jittered runs, and the e2e test with 429s, gave identical outputs.
+* *Bug found on the way:* a 429-retried URL of a template whose 12 samples were already dispatched waited for
+  its own verdict, so the level ended early (12 URLs left unfetched, traps missing). Retried samples now pass
+  the gate, and a template whose samples all finished gets its verdict instead of waiting.
+
+**Incremental re-runs (v1.0.1).**
+* *Failed:* re-check every depth ≤ 1 page with a conditional GET. Sitemap URLs are depth 1, so the second run
+  re-requested 134 of 159 URLs and took 23 s of a 27 s crawl. Unchanged pages also enqueued their stored links
+  only, so canonical targets and session-id records were lost (a 404 canonical target went missing).
+* *Now:* re-fetch only the start page, the 2% most-linked pages, changed `<lastmod>` (compared with the value
+  stored at the last fetch, not with the clock, since many sitemaps carry old dates), new URLs and a rotating
+  1-in-20 sample. Reused pages are re-parsed from the stored HTML, so links, nofollow rules, canonicals,
+  session-id records and trap samples come out exactly as from a fetch. Result: incremental output equals a
+  fresh crawl except `change_report.json`; all four planted next-day changes are detected.
+
 **Facet explosions.**
 * *Failed:* allow 25 query combinations per path, then block. Which 25 got in depended on the async fetch
   order, so two runs could crawl different pages.
@@ -93,6 +114,16 @@ Probes now group by site section (last path segment → `*`).
 
 ## Part C — Cannibalization & gaps
 
+**Intent signals (v1.0.1).**
+* *Failed:* the navigational title rule `^(home|about|…)\b` matched "Home lift price basics", so 7 blog
+  posts were labelled navigational. The link-density signal was always 0 (never computed).
+* *Now:* the word must be the whole title or be followed by a separator ("Home | Brand"). schema.org types
+  (JSON-LD incl. `@graph`, microdata) and `og:type` add weight: Product/Offer → transactional,
+  Article/BlogPosting/HowTo/QAPage → informational, AboutPage/ContactPage → navigational, Review → commercial
+  (not when the page is a Product). Site-wide types (WebSite, Organization, BreadcrumbList) add nothing.
+  Link density = in-content links per 100 words. On the dev pair the 7 posts became informational.
+
+
 **Topic vectors.**
 * *Failed:* exact `TfidfVectorizer` with unigrams + bigrams. Peak RAM was **2,539 MB** at 10k pages per
   site, above the 2 GB limit.
@@ -133,6 +164,16 @@ Probes now group by site section (last path segment → `*`).
   average, **91.41%** in the worst case.
 * *Now:* the estimate shortlists the 12 best candidates, and an exact PageRank recompute picks among them,
   K times. **99.55%** on average, **95.46%** worst case (`link_plan.json → greedy_vs_optimal_small_graphs`).
+
+**Anchors that name only the target (v1.0.1).**
+* *Failed (3rd version):* "home lift" was proposed as the anchor to 5 different product pages, because every
+  product title contains it. That creates the anchor-text cannibalization Part C reports.
+* *Now:* an anchor may not occur in the title/H1 of any other page, nor in the phrases of another priority
+  page; a number counts as distinctive ("model 3"). One sentence carries at most one new link. When no
+  sentence holds such an anchor verbatim, the closest partial phrase is **widened** to a title phrase
+  ("home lift" → "home lift model 3"); the plan marks these `anchor_mode: widen` with `replaces` and
+  `suggested_sentence`, and both the original part (in the sentence) and the new phrase (in the target's
+  title/H1) are verified claims.
 
 **Anchors (first real run).**
 * *Failed (2nd version):* any title word could be the anchor, including single words. Real anchors

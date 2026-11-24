@@ -25,14 +25,14 @@ Machine for the measured rows: 2-core cloud container, 8 GB RAM, Python 3.13.
 
 | Limit | Target | Synthetic dev pair | Scale test (50k/site) | Real pair 1 (backlinko vs seo.com) | Real pair 2 (beardo vs bombayshaving) |
 |---|---|---|---|---|---|
-| Time, full run | ≤ budget | 45.5 s | analysis 313–419 s* | **638 s** of a 1,200 s budget | **1,115 s** of a 1,200 s budget (crawl stopped at its 936 s deadline) |
-| Peak RAM (process + children) | ≤ 2 GB | 600 MB (incl. Chromium) | 1,355 MB | **975 MB** | **313 MB** |
+| Time, full run | ≤ budget | 48.4 s | analysis 313–419 s* | **638 s** of a 1,200 s budget | **1,115 s** of a 1,200 s budget (crawl stopped at its 936 s deadline) |
+| Peak RAM (process + children) | ≤ 2 GB | 663 MB (incl. Chromium) | 1,355 MB | **975 MB** | **313 MB** |
 | LLM cost | ≤ $0.50 | $0 (no key) / capped at $0.45 | – | **$0.0255** | **$0.0183** |
 | Max requests in any 1 s window per host | ≤ 6 | 6 / 6 | – | 6 / 6 (r02 run) | 6 / 6 (r02 run) |
-| Robots: Google parser tests | pass | 20/20 pass | – | – | – |
-| Repeatability (2 fresh runs) | identical | 12/12 files identical | – | not measured (live sites change between runs) | not measured |
+| Robots: Google parser tests | pass | 23/23 pass | – | – | – |
+| Repeatability (2 fresh runs) | identical | 12/12 files identical, also with 429 responses and 0–300 ms random server latency (`server.py --jitter`) | – | not measured (live sites change between runs) | not measured |
 | Crash + resume = uninterrupted | identical | 4/4 kill points identical | – | – | – |
-| Incremental re-run | ≤ 10% of first | 41 s vs 45 s (see note) | – | not measured | not measured |
+| Incremental re-run | ≤ 10% of first | 8.2 s vs 48.4 s = 17% (see note); output identical to a fresh crawl except `change_report.json` | – | not measured | not measured |
 
 Real-run crawl facts:
 
@@ -53,11 +53,15 @@ and the crawler backs off as Googlebot does (DECISIONS.md, Part A).
 \* 313 s with the MinHash signature cache warm, 419 s cold. At 6 req/s, 70 min of crawling fetches at most
 ~25k pages per host, so real analysis input is about half of the scale test.
 
-**Incremental note.** On the tiny synthetic site, fixed costs dominate the second run: robots, sitemaps,
-conditional re-checks of the ~120 depth-≤1 hub pages at 6 req/s, and ~15 s of analysis. So it does not show
-the 10% ratio. On a real site, the first run is ~80 min, and a re-run re-checks only hubs, sitemap-`lastmod`
-changes and new URLs. It is time-capped at 8% of the first run's crawl time. The 10% target must be measured
-on real pairs (row above).
+**Incremental note (v1.0.1).** A re-run re-fetches only: the start page, the 2% most-linked pages (min 10),
+pages whose sitemap `<lastmod>` changed, new URLs, and a rotating 1-in-20 sample (so every page is re-checked
+within ~20 runs). Every other page is reused from the store and replayed exactly as if fetched (links,
+canonicals, trap samples), and render verdicts per site section are reused. On the 180-page dev pair this is
+51 requests instead of 243, and 8.2 s instead of 48.4 s. About 4 s of that is fixed cost (start-up, robots,
+sitemaps, two 404 probes, analysis), which is why a tiny site does not reach 10%. The variable part scales with
+2% + 5% + changed pages. The 10% target has to be shown on a real pair (row above, not measured yet).
+Known limit: a change to boilerplate only (e.g. a "related posts" sidebar) on a page whose `<lastmod>` did not
+change is picked up by the rotation, not on the next run.
 
 Commands:
 ```
@@ -75,10 +79,10 @@ python devsite/scale_test.py 50000 scale50k                    # scale test
 |---|---|---|---|
 | Traps detected and reported with pattern | calendar, facet, session, path: all 4 | pair 1: template trap (`/?p=` shortlinks) + session id; pair 2: facet params | `report/crawl_summary.json → traps` |
 | Trap budget ≤ 5% | 3.68% | pair 1: 1.4%; pair 2: 0% | `… → trap_budget_share` |
-| Render ≤ 15% of pages | 5.3% (7/131) | pair 1: 9.9% / 7.7%; pair 2: 0% | `… → rendered_share` |
-| Catch ≥ 95% of JS-different pages | est. recall 1.00 (0/60 missed) | not measured on real pairs | `seo-intel-eval render-audit --out runA --n 100` |
+| Render ≤ 15% of pages | 14.5% (19/131, incl. 4 audit renders) | pair 1: 9.9% / 7.7%; pair 2: 0% | `… → rendered_share` |
+| Catch ≥ 95% of JS-different pages | automatic audit in every run: 0 of 4 sampled unrendered pages changed when rendered, est. recall 1.00; gold audit 0/60 missed | not measured on real pairs | `crawl_summary.json → render_recall_audit`; `seo-intel-eval render-audit --out runA --n 100` |
 | Redirect chain / loop / meta / JS / X-Robots / canonical chain, to 404, to redirect | all found | pair 1: 2-hop chains + single redirects to an external site (hop-count bug found and fixed, r03); pair 2: false JS redirects from an SSO script (fixed, r04) | `crawl_summary.json` |
-| Soft-404 precision ≥ 90% | 1/1 flagged correct | pair 1: 0 flagged; precision needs labels (not done) | label `url,label` then `seo-intel-eval soft404 --out runA --labels soft.csv` |
+| Soft-404 precision ≥ 90% | 1/1 flagged correct; automatic self-test (second missing URL of another shape) passes on both sites | pair 1: 0 flagged; precision needs labels (not done) | label `url,label` then `seo-intel-eval soft404 --out runA --labels soft.csv` |
 | Change report | title, canonical, new, removed: all detected | not measured (no next-day run) | `report/change_report.json` after a 2nd run |
 
 ## Part B — Extraction & duplicates
@@ -123,8 +127,8 @@ SEO_INTEL_ABLATE_TEMPLATE=1 seo-intel SITE --competitor COMP --out runA_notpl --
 
 | Target | Synthetic dev pair | Command |
 |---|---|---|
-| K links, ≤ 3 per source, relevant sources only | 36 of K=40 (greedy stops when no remaining candidate raises priority PageRank) | `report/link_plan.json` |
-| Predicted vs recomputed PageRank (priority pages, ×1000) | 19.26 → 260.01 predicted, 260.01 recomputed | `… → total_after_*` |
+| K links, ≤ 3 per source, relevant sources only | 13 of K=40: only anchors that name the target alone are allowed (v1.0.1), so fewer candidates exist | `report/link_plan.json` |
+| Predicted vs recomputed PageRank (priority pages, ×1000) | 19.52 → 63.04 predicted, 63.04 recomputed | `… → total_after_*` |
 | Greedy vs better method (brute force, 10 small graphs) | 99.55% mean / 95.46% min of optimal gain | `… → greedy_vs_optimal_small_graphs` |
 
 ## Part E — Agent
