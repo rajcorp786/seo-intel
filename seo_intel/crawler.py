@@ -532,8 +532,10 @@ class SiteCrawl:
         from .render import DIFF_THRESHOLD
         pool = sorted((u for (u,) in self.store.db.execute(
             "SELECT url FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND rendered=0 AND scripts>0 "
-            "AND run=?", (self.role, self.run))), key=sha)
+            "AND run=? AND (unchanged=0 OR ?=0)", (self.role, self.run, int(self.mode == "incremental")))), key=sha)
         st = self.store
+        if self.mode == "incremental" and not pool:
+            return  # nothing new to audit: the last run's audit still describes the stored pages
         st.stat(self.role, "render_audit_pool", len(pool))
         sample = pool[:max(0, min(RENDER_AUDIT_N, self.render_budget(audit=True)))]
         missed = 0
@@ -563,10 +565,16 @@ class SiteCrawl:
         from collections import defaultdict
         from .urlnorm import section_template as template
         by_tpl = defaultdict(list)
+        inc = self.mode == "incremental"
+        known = self.store.get_meta(f"template_js:{self.role}", {}) if inc else {}
         for (u,) in self.store.db.execute(
                 "SELECT url FROM pages WHERE site=? AND status=200 AND html IS NOT NULL AND rendered=0 AND scripts>0 "
-                "AND run=? ORDER BY url", (self.role, self.run)):
+                "AND run=? AND (unchanged=0 OR ?=0) ORDER BY url", (self.role, self.run, int(inc))):
             by_tpl[template(u)].append(u)
+        # incremental: unchanged pages keep last run's render result; sections probed last time keep their
+        # verdict (only pages fetched again are rendered when the section needs it)
+        for tpl, js in known.items():
+            self.policy.template_js.setdefault(tpl, js)
         from .render import PROBES_PER_TEMPLATE
         n_par = max(1, self.renderer.n)
 
@@ -586,16 +594,23 @@ class SiteCrawl:
 
         for tpl in sorted(by_tpl):
             urls = sorted(by_tpl[tpl], key=lambda u: sha(u))
+            if tpl in known:
+                if known[tpl]:
+                    _, ok = await batch(urls, "template_js")
+                    if not ok:
+                        break
+                continue
             res, ok = await batch(urls[:PROBES_PER_TEMPLATE], "probe")
             for u, g in res:
                 if g is not None:
                     self.policy.learn(u, g)
             if not ok:
-                return
+                break
             if self.policy.template_js.get(tpl):
                 _, ok = await batch(urls[PROBES_PER_TEMPLATE:], "template_js")
                 if not ok:
-                    return
+                    break
+        self.store.set_meta(f"template_js:{self.role}", dict(sorted(self.policy.template_js.items())))
 
     async def render_one(self, url, reason):
         """Render one stored page; update fields/links if rendering changed it. Returns token gain."""
