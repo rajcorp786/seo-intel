@@ -35,6 +35,8 @@ MIN_COHESION = 0.35
 MISS_MAX_PAGES = 1
 MISS_WORD_SHARE = 0.2
 MISS_MAX_SIM = 0.55
+FAMILY_SIM = 0.75     # series whose pages say the same thing (centroid cosine) ...
+FAMILY_SHARED = 3     # ... about the same entities (>= 3 common endings) are ONE family of pages
 SERIES_MIN = 8        # pages sharing a path prefix
 SERIES_SUFFIX = 3     # ... and differing only in the last 1-3 words (the entity)
 _SPLIT = re.compile(r"[-_/]+")
@@ -61,6 +63,47 @@ def url_series(urls):
     return out
 
 
+def _family_terms(prefixes):
+    from collections import Counter
+    c = Counter(w for p in prefixes for w in set(p) if len(w) > 2 and w not in ("for", "the", "and", "in"))
+    return [w for w, _ in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))][:6]
+
+
+def _merge_families(groups, series, Z):
+    """Series that are keyword variants of one page family ('/home-lifts-in-<city>', '/house-lifts-in-<city>'
+    ...) become one group: same entities in the endings AND near-identical content. Deterministic."""
+    keys = sorted(g for g in groups if g[0] == "series")
+    ends, cents = {}, {}
+    for g in keys:
+        L = len(g[1])
+        ends[g] = {tuple(_SPLIT.split(urlsplit(r[2]).path.strip("/").lower()))[L:] for r in groups[g]}
+        v = Z[[r[0] for r in groups[g]]].mean(axis=0)
+        cents[g] = v / max(np.linalg.norm(v), 1e-12)
+    parent = {g: g for g in keys}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    for i, a in enumerate(keys):
+        for b in keys[i + 1:]:
+            if len(ends[a] & ends[b]) >= FAMILY_SHARED and float(cents[a] @ cents[b]) >= FAMILY_SIM:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    parent[max(ra, rb)] = min(ra, rb)
+    fam = defaultdict(list)
+    for g in keys:
+        fam[find(g)].append(g)
+    out = {g: v for g, v in groups.items() if g[0] != "series"}
+    families = 0
+    for root, members in sorted(fam.items()):
+        rows = sorted({r for m in members for r in groups[m]}, key=lambda r: r[2])
+        out[("series", tuple(sorted(m[1] for m in members)))] = rows
+        families += len(members) > 1
+    return out, families
+
+
 def find_gaps(Z, rows, space, seed, pr_share):
     """rows: list of (zi, site, url, word_count). pr_share: url -> pagerank (within its site)."""
     comp_rows = [r for r in rows if r[1] == "competitor"]
@@ -82,23 +125,33 @@ def find_gaps(Z, rows, space, seed, pr_share):
         labels = km.fit_predict(Z[[r[0] for r in rest]])
         for r, lab in zip(rest, labels):
             groups[("topic", int(lab))].append(r)
+    groups, families = _merge_families(groups, series, Z)
     tz = Z[[r[0] for r in targ_rows]] if targ_rows else np.zeros((0, Z.shape[1]))
     gaps = []
     n_series = sum(1 for g in groups if g[0] == "series")
     summary = {"k": k, "page_series": n_series, "clusters_with_competitor_depth": 0,
-               "method": "competitor URL series + topic clusters of the remaining pages, in the shared space"}
+               "series_families": families,
+               "method": "competitor URL series (merged into families of keyword variants) + topic clusters "
+                         "of the remaining pages, in the shared space"}
     ordered = sorted(groups, key=lambda g: (g[0] != "topic", g[1]))
     for gi, gkey in enumerate(ordered):
         comp = groups[gkey]
         c = gkey[1] if gkey[0] == "topic" else k + gi
         pattern = None
+        patterns = None
         if gkey[0] == "series":
-            paths = sorted(urlsplit(r[2]).path for r in comp)
-            common = paths[0]
-            for q in paths[1:]:
-                while not q.startswith(common):
-                    common = common[:-1]
-            pattern = common + "*"
+            by_p = defaultdict(list)
+            for r in comp:
+                by_p[series[r[2]]].append(urlsplit(r[2]).path)
+            patterns = []
+            for pfx in sorted(by_p):
+                paths = sorted(by_p[pfx])
+                common = paths[0]
+                for q in paths[1:]:
+                    while not q.startswith(common):
+                        common = common[:-1]
+                patterns.append(common + "*")
+            pattern = patterns[0] if len(patterns) == 1 else f"{len(patterns)} URL patterns, e.g. {patterns[0]}"
         if len(comp) < DEPTH_PAGES:
             continue
         cw = [r[3] or 0 for r in comp]
@@ -122,9 +175,8 @@ def find_gaps(Z, rows, space, seed, pr_share):
         score = sum(cw) * (1 - max(0.0, best_sim)) * (1 + 10 * cpr)
         comp_sorted = sorted(comp, key=lambda r: (-(pr_share.get(r[2], 0.0)), r[2]))
         gaps.append({
-            "cluster": int(c), "series_pattern": pattern,
-            "topic_terms": ([w for w in gkey[1] if len(w) > 2 and w not in ("for", "the", "and")][:6] if pattern
-                            else space.centroid_terms([r[0] for r in comp])),
+            "cluster": int(c), "series_pattern": pattern, "series_patterns": patterns,
+            "topic_terms": (_family_terms(gkey[1]) if patterns else space.centroid_terms([r[0] for r in comp])),
             "competitor_pages": len(comp), "competitor_words_total": int(sum(cw)),
             "competitor_words_median": int(np.median(cw)), "cohesion": round(cohesion, 4),
             "target_pages": len(covering), "target_words_total": int(tw),

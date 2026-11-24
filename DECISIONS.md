@@ -133,6 +133,11 @@ Probes now group by site section (last path segment → `*`).
   last 1–3 words). Each series is one gap candidate; the remaining pages are clustered by topic. On the same
   1,359 URLs this gives **27** series (home-elevators-in 72 pages, stairlifts-in 58 …) and 15 other pages.
 
+**Gap families (v1.0.4, real run).** After v1.0.3, 27 of 28 gaps were still one strategy: the same
+~405 place names under 27 keyword variants. Series that share ≥ 3 endings and whose content centroids have
+cosine ≥ 0.75 are now one gap ("N URL patterns, e.g. …"); different topics with the same endings (cosine
+below 0.75) stay apart (unit test).
+
 
 **Intent signals (v1.0.1).**
 * *Failed:* the navigational title rule `^(home|about|…)\b` matched "Home lift price basics", so 7 blog
@@ -184,6 +189,12 @@ Probes now group by site section (last path segment → `*`).
   average, **91.41%** in the worst case.
 * *Now:* the estimate shortlists the 12 best candidates, and an exact PageRank recompute picks among them,
   K times. **99.55%** on average, **95.46%** worst case (`link_plan.json → greedy_vs_optimal_small_graphs`).
+
+**Generic anchors (v1.0.4, real run).**
+* *Failed:* "distinctive" meant "not common in the site's titles". On hybonelevators.com that still allowed
+  "spare parts" (8 links), "waiting time" (4), "right one", and lists such as "space and installation".
+* *Now:* the anchor's distinctive word must also be rare in the site's body text (≤ 25% of pages), and an
+  anchor with "and"/"or" must be a whole title/H1 segment. Fewer links can be found; the plan says so.
 
 **One page must not take the whole budget (v1.0.3, real run).**
 * *Failed:* maximise total priority PageRank with only the per-source limit. On hybonelevators.com 27 of 33

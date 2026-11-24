@@ -527,6 +527,20 @@ def stage_links(ctx):
         # '3' of 'model 3' counts, since it is what tells sibling pages apart
         title_words = all_words - common
         per_target[t] = (phrases, title_words, [])
+    # words that appear in the body text of many pages are generic ("spare parts", "waiting time" are in
+    # half the site's articles): they cannot be what tells a reader where a link goes
+    want = set().union(*(v[1] for v in per_target.values())) if per_target else set()
+    df = dict.fromkeys(want, 0)
+    n_docs = 0
+    for (mt,) in ctx.store.db.execute("SELECT main_text FROM pages WHERE site='target' AND status=200 AND "
+                                      "main_text IS NOT NULL ORDER BY url"):
+        n_docs += 1
+        for w in want & set(_tk(mt or "", drop_stop=True)):
+            df[w] += 1
+    lim = max(3, linkopt.ANCHOR_DF_MAX * n_docs)
+    for t, (phrases, title_words, full) in list(per_target.items()):
+        keep = {w for w in title_words if w.isdigit() or df.get(w, 0) <= lim}
+        per_target[t] = (phrases, keep, full)
         for seq in phrases:
             for L in range(2, 7):
                 for i in range(len(seq) - L + 1):

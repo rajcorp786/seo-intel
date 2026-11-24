@@ -2,6 +2,15 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.4 (2026-11-24): anchors and gap families
+Found by the v1.0.3 run on hybonelevators.com vs eliteelevators.com.
+
+| Area | What changed | Why |
+|---|---|---|
+| Gaps | URL series that are keyword variants of one page family (same entities in the endings, near-identical content) are merged into one gap | 27 of 28 gaps were the same city-page family under different keywords ("home-lifts-in", "house-lifts-in", "residential-lifts-in" …) |
+| Anchors | No "and"/"or" inside an anchor unless it is a whole title/H1 segment | "space and installation", "quality, parts and service", "Escalators and moving" |
+| Anchors | The distinctive word must appear in the body of at most 25% of the site's pages | generic anchors such as "spare parts", "waiting time", "right one" |
+
 ## 1.0.3 (2026-11-24): report quality
 Found by a real run (hybonelevators.com vs eliteelevators.com).
 

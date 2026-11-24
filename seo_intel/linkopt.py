@@ -25,6 +25,7 @@ from .graph import DAMPING, pagerank
 from .textnorm import DEV, STOP, sentences
 
 REL_MIN = 0.40
+ANCHOR_DF_MAX = 0.25  # a distinctive anchor word appears in the body of at most 25% of the site's pages
 MAX_PER_SOURCE = 3
 TOP_M = 12
 SOURCES_PER_TARGET = 250
@@ -189,6 +190,20 @@ def ambiguous_grams(needed, pages):
     return bad
 
 
+CONJ = {"and", "or", "&", "but", "nor", "aur", "ya", "और", "या"}
+
+
+def anchor_ok(g, whole, title_words):
+    """A natural anchor names one thing: no 'and'/'or' inside unless it is a whole title/H1 segment
+    ('space and installation', 'quality, parts and service' are lists, not names), and its distinctive
+    word must be one the target's title/H1 actually owns (title_words already excludes words common in
+    the site's titles and in its body text)."""
+    t = tuple(g)
+    if any(x in CONJ for x in t) and t not in whole:
+        return False
+    return any(x in title_words for x in t)
+
+
 def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_heads=(), banned=frozenset(),
                 rewrite_phrases=()):
     """Return (sentence, anchor, score) or None.
@@ -200,6 +215,7 @@ def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_hea
     existing = [a.strip().lower() for a in existing_anchors if a and len(a.strip()) >= 3]
     heads = {h.strip().lower() for h in source_heads if h}
     grams = set()
+    whole = {tuple(seq) for seq in phrases[:4]}
     for seq in phrases:
         for L in range(2, 7):
             for i in range(len(seq) - L + 1):
@@ -222,7 +238,7 @@ def find_anchor(main_text, phrases, title_words, existing_anchors=(), source_hea
             for i in range(len(toks) - L + 1):
                 g = toks[i:i + L]
                 words = [x for x in g if x not in STOP and not x.isdigit() and len(x) >= 2]
-                if tuple(g) in grams and len(words) >= 2 and any(x in title_words for x in g):
+                if tuple(g) in grams and len(words) >= 2 and anchor_ok(g, whole, title_words):
                     cand = (ms[i].start(), ms[i + L - 1].end(), len(words))
                     break
             if cand:
