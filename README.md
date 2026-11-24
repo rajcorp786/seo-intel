@@ -25,7 +25,11 @@ source .venv/bin/activate
 python -m pip install . && python -m playwright install chromium
 ```
 
-Check it works: `seo-intel --version`, `python -m pytest tests` (37 tests, ~10 s).
+Check it works: `seo-intel --version`, `python -m pytest tests` (45 tests, ~10 s).
+
+**Quick install without cloning** (inside an activated venv):
+`python -m pip install git+https://github.com/rajcorp786/seo-intel.git && python -m playwright install chromium`
+(add `@v1.0.1` after `.git` for a fixed version).
 
 * Always use `python -m pip`, not plain `pip`: on many machines `pip` is not on the PATH.
 * The second half of the install line downloads the headless browser used for JavaScript pages. If you skip
@@ -105,3 +109,5 @@ Timing, memory and AI cost for the run are in `logs/run_stats.json`.
   cannibalization pairs). `tools\compute_label_scores.bat RUN…` turns those labels into F1, Cohen's kappa and the ablation table.
 * `tools\big_run.bat` does a full 90-minute run on a large pair. Run it again the next day for the incremental test.
 * Developers: `python -m pytest tests` runs the test suite. `python devsite/server.py` starts the synthetic test sites.
+
+Want to change the code? See [CONTRIBUTING.md](CONTRIBUTING.md).
