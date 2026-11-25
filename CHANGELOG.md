@@ -2,6 +2,17 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.8 (2026-11-25): what diff-runs found on the live pair
+`seo-intel-eval diff-runs` on two fresh runs (hybonelevators.com vs eliteelevators.com): same pages, same stop
+step (2,277 competitor pages), and the same main text everywhere except (a) 2 target pages that failed with a
+network error in one run only, and (b) the competitor site edited its JSON-LD between the runs (a trailing
+comma). Everything downstream (topics, groups, plan) shifts when even two pages differ.
+
+| Area | What changed |
+|---|---|
+| Crawl | Network errors / 5xx: 3 retries with 2, 4, 8 s back-off (was 2 × 1 s in 1.0.7, none before) |
+| Parse | JSON-LD with trailing commas is read instead of dropped |
+
 ## 1.0.7 (2026-11-25): repeatability on live sites
 Two fresh runs on hybonelevators.com vs eliteelevators.com gave different outputs (11 of 12 files).
 

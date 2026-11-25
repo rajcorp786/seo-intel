@@ -34,6 +34,14 @@ Everything below was measured during development on the synthetic dev pair in `d
   session-id records and trap samples come out exactly as from a fetch. Result: incremental output equals a
   fresh crawl except `change_report.json`; all four planted next-day changes are detected.
 
+**Repeatability on a live pair (v1.0.7–1.0.8).**
+* *Failed:* store a timeout as the page's result. Two fresh runs on hybonelevators.com differed in 11 of 12
+  files; `diff-runs` showed only 2 target pages differed (network error in one run, 200 in the other) and the
+  competitor had edited its markup between runs. Two changed pages move the whole topic space.
+* *Now:* transient failures are retried 3 times with back-off; JSON-LD with trailing commas is read.
+* *Limit that remains:* if a site really changes between two runs, the output changes too. That is correct
+  behaviour, but it means two runs should be made back-to-back.
+
 **Running out of time (v1.0.2, found on a real throttling site).**
 * *Failed:* crawl until the clock says stop. On daffodilsw.com the site answered 429/503 57 times, the
   rate kept climbing back to the rejected rate, and the crawl was cut at 929 pages with 1,528 URLs left and

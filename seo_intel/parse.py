@@ -79,16 +79,25 @@ def _ld_types(node, acc, depth=0):
                 _ld_types(node[k], acc, depth + 1)
 
 
+_TRAILING_COMMA = re.compile(r",\s*([}\]])")
+
+
 def schema_types(tree):
     """schema.org types a page declares (JSON-LD @type incl. @graph / mainEntity, microdata itemtype) and its
     og:type as 'og:<type>'. Sorted, so the stored value never depends on markup order."""
     acc = set()
     for sc in tree.iter("script"):
         if (sc.get("type") or "").lower().strip() == "application/ld+json" and sc.text:
+            raw = sc.text.strip().rstrip(";")
             try:
-                _ld_types(json.loads(sc.text.strip().rstrip(";")), acc)
+                _ld_types(json.loads(raw), acc)
             except (ValueError, RecursionError):
-                continue
+                # many CMS templates leave a trailing comma ("},\n]"): read it the forgiving way, so a
+                # one-character edit to the markup does not change what the page is
+                try:
+                    _ld_types(json.loads(_TRAILING_COMMA.sub(r"\1", raw)), acc)
+                except (ValueError, RecursionError):
+                    continue
     for el in tree.xpath("//*[@itemtype]")[:100]:
         for t in (el.get("itemtype") or "").split():
             acc.add(t.rstrip("/").rsplit("/", 1)[-1][:40])

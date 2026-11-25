@@ -21,7 +21,7 @@ from .urlnorm import host_of, is_asset, netloc_of, normalize, reg_domain, site_s
 
 
 MAX_RETRIES = 4
-TRANSIENT_RETRIES = 2
+TRANSIENT_RETRIES = 3
 # pages per site = rate x crawl seconds x this; leaves room for redirects, robots, sitemaps, renders and
 # back-off, so a normal site is fully crawled to the cap BEFORE the deadline (a deadline cut is timing-dependent)
 PAGE_EFFICIENCY = 0.75
@@ -405,7 +405,7 @@ class SiteCrawl:
                 # instead of storing a different error in each run
                 self.retries[url] = self.retries.get(url, 0) + 1
                 self.retrying.add(url)
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0 * 2 ** (self.retries[url] - 1))  # 2 s, 4 s, 8 s
                 return
             if r.get("status") in (429, 503) and not r.get("chain"):
                 n = self.retries.get(url, 0)

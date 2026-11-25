@@ -255,3 +255,11 @@ def test_keyword_variant_series_merge_into_one_family():
         groups[("series", s[r[2]])].append(r)
     out, fams = _merge_families(groups, s, Z)
     assert fams == 1 and len(out) == 2   # home/house lifts merged; the blog series stays apart
+
+
+def test_jsonld_with_trailing_comma_still_read():
+    from seo_intel.parse import parse_page
+    html = ("<html><head><script type='application/ld+json'>{\"@graph\":[{\"@type\":\"Product\"},]}</script>"
+            "</head><body></body></html>")
+    f, _ = parse_page(html, "https://e.com/x")
+    assert f["schema"] == ["Product"]
