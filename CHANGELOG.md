@@ -2,6 +2,17 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.0.9 (2026-11-25): rendering made repeatable
+Second live diff-runs (v1.0.8): no network errors any more, same pages and stop step; the remaining
+differences were 7 target pages rendered in one run only and 4 pages whose stored text was the rendered DOM in
+one run and the raw HTML in the other, plus 1 competitor page the site served in a different variant.
+
+| Area | What changed |
+|---|---|
+| Render | The rendered DOM replaces the stored page only when the visible text grows by more than the render threshold (20%); small, timing-dependent gains keep the raw HTML |
+| Render | A failed or timed-out render is tried once more before giving up |
+| diff-runs | Shows render reasons and gains of pages rendered differently, and the pages whose main text changed |
+
 ## 1.0.8 (2026-11-25): what diff-runs found on the live pair
 `seo-intel-eval diff-runs` on two fresh runs (hybonelevators.com vs eliteelevators.com): same pages, same stop
 step (2,277 competitor pages), and the same main text everywhere except (a) 2 target pages that failed with a

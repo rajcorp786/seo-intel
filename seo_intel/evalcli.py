@@ -218,7 +218,7 @@ def cmd_diff_runs(a):
     def load(run):
         db = sqlite3.connect(str(Path(run) / "crawl.db"))
         pages = {r[0]: r[1:] for r in db.execute(
-            "SELECT url, site, status, raw_hash, main_hash, title, rendered, html FROM pages")}
+            "SELECT url, site, status, raw_hash, main_hash, title, rendered, html, render_reason FROM pages")}
         stats = {(s_, k): v for s_, k, v in db.execute("SELECT site, k, v FROM stats")}
         return pages, stats
 
@@ -250,6 +250,8 @@ def cmd_diff_runs(a):
             "examples_only_a": only_a[:8], "examples_only_b": only_b[:8],
             "status_changed": len(status), "examples_status": status[:8],
             "raw_html_changed": len(raw), "main_text_changed": len(main), "render_differs": len(rend),
+            "examples_render": [(u, A[u][7], B[u][7]) for u in rend[:8]],
+            "examples_main_text": main[:8],
             "stopped_at_step": [sa.get((site, "stopped_at_step")), sb.get((site, "stopped_at_step"))],
             "throttled": [sa.get((site, "throttled")), sb.get((site, "throttled"))],
             "first_html_difference": examples,

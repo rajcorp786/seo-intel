@@ -667,6 +667,8 @@ class SiteCrawl:
             return None
         self.n_rendered += 1
         rendered, nav_target = await self.renderer.render(url, html)
+        if not rendered:  # a browser hiccup: one more try, so a timeout does not decide what is stored
+            rendered, nav_target = await self.renderer.render(url, html)
         if not rendered:
             return None
         raw_vt = P.visible_text(P.to_tree(html))
@@ -682,20 +684,27 @@ class SiteCrawl:
                 nav_target = None  # login/SSO/consent scripts navigating a headless browser: not a redirect
             else:
                 row["js_redirect"] = normalize(nav_target, url)[0]
-        upd = {k: row[k] for k in ("title", "h1", "canonical", "meta_robots", "hreflang", "js_redirect")
-               if row.get(k) is not None}
-        if gain > 0.05 or nav_target:
+        # Only a MEANINGFUL difference replaces the stored page. Small gains come from timing (a carousel
+        # or a lazy widget that loaded in one run and not in the other); keeping the raw HTML for those makes
+        # two runs store the same text. Same threshold as the render decision itself.
+        from .render import DIFF_THRESHOLD
+        meaningful = gain > DIFF_THRESHOLD
+        upd = {}
+        if meaningful or nav_target:
+            upd = {k: row[k] for k in ("title", "h1", "canonical", "meta_robots", "hreflang", "js_redirect")
+                   if row.get(k) is not None}
+        if meaningful or nav_target:
             import zlib
             upd["html"] = zlib.compress(rendered.encode("utf-8", "replace"), 6)
         st = self.store
         st.db.execute("BEGIN")
         sets = ",".join(f"{k}=?" for k in upd) + ("," if upd else "") + "rendered=1, render_reason=?"
         st.db.execute(f"UPDATE pages SET {sets} WHERE url=?", list(upd.values()) + [f"{reason}:gain={gain:.2f}", url])
-        if gain > 0.05:
+        if meaningful:
             st.db.execute("DELETE FROM links WHERE src=?", (url,))
             st.db.executemany("INSERT OR IGNORE INTO links VALUES(?,?,?,?,?)", links)
         st.db.execute("COMMIT")
-        if gain > 0.05:
+        if meaningful:
             depth = st.db.execute("SELECT depth FROM pages WHERE url=?", (url,)).fetchone()[0]
             self.enqueue_links(url, depth, links, {**row, "x_robots": None})
         return gain
