@@ -129,6 +129,22 @@ class Renderer:
         except (asyncio.TimeoutError, Exception):
             return None, None
 
+    # A cold render fetches every script of the page for the first time (no cache yet); on a heavy WordPress
+    # page that alone can pass 10 s, so the FIRST render of a page fails while every later one succeeds. That
+    # made one run store raw HTML and the other the rendered DOM. render_sure retries with longer limits
+    # (scripts fetched during a failed try are cached, so later tries are fast) before giving up.
+    RETRY_PLAN = ((10000, 25.0), (30000, 60.0), (30000, 60.0))
+
+    async def render_sure(self, url: str, html: str):
+        for i, (t_ms, hard) in enumerate(self.RETRY_PLAN):
+            out, nav = await self.render(url, html, timeout_ms=t_ms, hard_s=hard)
+            if out:
+                return out, nav
+            if not self.available:
+                break
+            await asyncio.sleep(2 * (i + 1))
+        return None, None
+
     async def _render(self, url, html, timeout_ms, idle_ms):
         async with self.sem:
             ctx = await self._browser.new_context(user_agent="Mozilla/5.0 (compatible; seo-intel/1.0; +https://github.com/rajcorp786/seo-intel)",

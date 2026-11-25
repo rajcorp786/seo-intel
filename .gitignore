@@ -24,3 +24,7 @@ label-scores.txt
 gold.json
 labels.csv
 pair_labels.csv
+*_log.txt
+pagecheck*.txt
+diff*.txt
+.env

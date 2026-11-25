@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.5
+- Render retries: a page's FIRST render (cold script cache) could time out on heavy WordPress pages while every later render succeeded, so one run stored raw HTML and the other the rendered DOM (found with page-check on the Hybon header-template page). Renders now try 3 times with growing limits (10 s / 30 s / 30 s); confirm and double-check renders use the same retries.
+- page-check starts every simulated run with an empty cache, so it reproduces a fresh crawl.
+- Tarball no longer contains `.git`.
+
+## 1.1.4
+- New `seo-intel-eval page-check URL --runs N`: tests ONE page exactly the way the crawler decides it (render threshold, double-check band, confirmed JS redirect) N times and reports `"stable": true/false`. Use it to verify a page that differed between two runs without re-crawling the whole site.
+
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
 ## 1.1.3 (2026-11-25)

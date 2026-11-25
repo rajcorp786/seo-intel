@@ -690,9 +690,8 @@ class SiteCrawl:
         if not html:
             return None
         self.n_rendered += 1
-        rendered, nav_target = await self.renderer.render(url, html)
-        if not rendered:  # a browser hiccup: one more try, so a timeout does not decide what is stored
-            rendered, nav_target = await self.renderer.render(url, html)
+        # up to 3 tries with growing time limits, so a cold-cache timeout does not decide what is stored
+        rendered, nav_target = await self.renderer.render_sure(url, html)
         if not rendered:
             # Record the ATTEMPT, not the browser's luck: the page counts as rendered (it used render budget)
             # and keeps its raw HTML, exactly like a render that changed nothing. Otherwise a page whose render
@@ -701,7 +700,7 @@ class SiteCrawl:
             st.db.execute("BEGIN")
             st.db.execute("UPDATE pages SET rendered=1, render_reason=? WHERE url=?", (f"{reason}:failed", url))
             st.db.execute("COMMIT")
-            self.log(f"[{self.role}] render failed twice, raw HTML kept: {url}")
+            self.log(f"[{self.role}] render failed 3 times, raw HTML kept: {url}")
             return None
         raw_vt = P.visible_text(P.to_tree(html))
         ren_vt = P.visible_text(P.to_tree(rendered))
@@ -717,7 +716,7 @@ class SiteCrawl:
             else:
                 # a script navigation counts only if a second render navigates to the same place (timers,
                 # consent banners and A/B scripts navigate in some loads only)
-                _, nav2 = await self.renderer.render(url, html)
+                _, nav2 = await self.renderer.render_sure(url, html)
                 if nav2 and normalize(nav2, url)[0] == normalize(nav_target, url)[0]:
                     row["js_redirect"] = normalize(nav_target, url)[0]
                 else:
@@ -731,7 +730,7 @@ class SiteCrawl:
             # Close to the line: one render can land on either side (late XHR, lazy widgets). Render once
             # more and use the rendered DOM only if BOTH renders agree it changes the page; otherwise keep the
             # raw HTML. A page then flips only if two renders in a row disagree with the other run's two.
-            again, _ = await self.renderer.render(url, html)
+            again, _ = await self.renderer.render_sure(url, html)
             if again:
                 gain2 = token_gain(raw_vt, P.visible_text(P.to_tree(again)))
                 if (gain2 > DIFF_THRESHOLD) != meaningful:

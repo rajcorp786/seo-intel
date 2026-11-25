@@ -62,7 +62,12 @@ def cmd_render_audit(a):
     unr = [r[0] for r in st.db.execute("SELECT url FROM pages WHERE status=200 AND html IS NOT NULL AND rendered=0 "
                                        "ORDER BY url")]
     ren = [r for r in st.db.execute("SELECT url, render_reason FROM pages WHERE rendered=1")]
-    needed = sum(1 for _, rr in ren if rr and float(rr.split("gain=")[-1]) > 0.2)
+    def _g(rr):
+        try:
+            return float(rr.split("gain=")[1])
+        except (IndexError, ValueError, AttributeError):
+            return 0.0
+    needed = sum(1 for _, rr in ren if _g(rr) > 0.2)
     sample = random.Random(42).sample(unr, min(a.n, len(unr)))
 
     async def go():
@@ -85,6 +90,54 @@ def cmd_render_audit(a):
     print(json.dumps({"rendered": len(ren), "rendered_meaningful": needed, "unrendered": len(unr),
                       "sample": len(sample), "missed_in_sample": missed, "estimated_recall": round(recall, 4),
                       "render_share": round(len(ren) / max(1, len(ren) + len(unr)), 4)}, indent=1))
+
+
+def cmd_page_check(a):
+    """Test ONE page the way the crawler treats it, several times in a row: fetch it, render it 2x per
+    simulated run, apply the crawler's rules (render threshold + double check, confirmed JS redirect) and
+    report whether every simulated run would store the same thing."""
+    from . import parse as P
+    from .crawler import UNSURE_HI, UNSURE_LO
+    from .fetcher import Fetcher, HostLimiter, decode
+    from .render import DIFF_THRESHOLD, Renderer, token_gain
+    from .urlnorm import normalize
+
+    async def go():
+        f = Fetcher(HostLimiter(2))
+        r = Renderer(f, lambda u: True)
+        resp = await f.get_once(a.url)
+        if resp.get("status") != 200:
+            await f.close()
+            return {"url": a.url, "error": f"HTTP {resp.get('status')}"}
+        html = decode(resp.get("body") or b"", resp.get("encoding"))
+        raw_vt = P.visible_text(P.to_tree(html))
+        runs = []
+        for i in range(a.runs):
+            r.cache.clear(); r.cache_bytes = 0  # every simulated run starts cold, like a fresh crawl
+            renders = []
+            for _ in range(2):
+                out, nav = await r.render_sure(a.url, html)
+                g = token_gain(raw_vt, P.visible_text(P.to_tree(out))) if out else None
+                renders.append({"ok": bool(out), "gain": None if g is None else round(g, 3),
+                                "js_navigation": nav})
+            g1, g2 = renders[0]["gain"], renders[1]["gain"]
+            if g1 is None:
+                store = "raw (render failed)"
+            else:
+                meaningful = g1 > DIFF_THRESHOLD
+                if UNSURE_LO <= g1 <= UNSURE_HI and g2 is not None and (g2 > DIFF_THRESHOLD) != meaningful:
+                    meaningful = False
+                store = "rendered" if meaningful else "raw"
+            n1, n2 = renders[0]["js_navigation"], renders[1]["js_navigation"]
+            redirect = normalize(n1, a.url)[0] if n1 and n2 and normalize(n1, a.url)[0] == normalize(n2, a.url)[0] \
+                else None
+            runs.append({"run": i + 1, "renders": renders, "would_store": store, "js_redirect": redirect})
+        await r.close()
+        await f.close()
+        decisions = {(x["would_store"], x["js_redirect"]) for x in runs}
+        return {"url": a.url, "raw_words": len(raw_vt.split()), "threshold": DIFF_THRESHOLD,
+                "stable": len(decisions) == 1, "runs": runs}
+    print(json.dumps(asyncio.run(go()), indent=1))
 
 
 def cmd_soft404(a):
@@ -279,6 +332,7 @@ def main(argv=None):
     p = sub.add_parser("label-template"); p.add_argument("--out", required=True)
     p = sub.add_parser("determinism"); p.add_argument("a"); p.add_argument("b")
     p = sub.add_parser("diff-runs"); p.add_argument("a"); p.add_argument("b")
+    p = sub.add_parser("page-check"); p.add_argument("url"); p.add_argument("--runs", type=int, default=3)
     p = sub.add_parser("pair-template"); p.add_argument("--out", required=True); p.add_argument("--n", type=int, default=60)
     p = sub.add_parser("ablation"); p.add_argument("--out", required=True); p.add_argument("--labels", required=True)
     p = sub.add_parser("label-kit"); p.add_argument("runs", nargs="+"); p.add_argument("--html", default="label_kit.html")
@@ -286,7 +340,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     return {"extract-f1": cmd_extract_f1, "render-audit": cmd_render_audit, "soft404": cmd_soft404,
             "judge": cmd_judge, "label-template": cmd_label_template, "determinism": cmd_determinism,
-            "pair-template": cmd_pair_template, "ablation": cmd_ablation, "label-kit": cmd_label_kit, "diff-runs": cmd_diff_runs}[a.cmd](a) or 0
+            "pair-template": cmd_pair_template, "ablation": cmd_ablation, "label-kit": cmd_label_kit, "diff-runs": cmd_diff_runs,
+            "page-check": cmd_page_check}[a.cmd](a) or 0
 
 
 if __name__ == "__main__":
