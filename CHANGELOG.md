@@ -2,6 +2,17 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.1.3 (2026-11-25)
+Live re-run with 1.1.2: the same single page still differed. Its rendered DOM was stored because a script
+navigated away during that render (not because of the text gain), and such script navigations happen in some
+loads only.
+
+| Area | What changed |
+|---|---|
+| Render | A JS redirect is recorded only if a second render navigates to the same URL |
+| Render | A redirect alone no longer replaces the stored page with the rendered DOM; only a text gain above the threshold does |
+| diff-runs | For pages whose main text differs: render reason and JS redirect in both runs |
+
 ## 1.1.2 (2026-11-25)
 Live pair re-run with 1.1.1: competitor (1,600 pages) **fully identical**; target identical except 1 of 118
 pages (`?elementskit_template=new-header`), whose render gain sat on the 0.20 line: stored rendered in one run,

@@ -715,7 +715,13 @@ class SiteCrawl:
             if P.AUTH_NAV.search(sp.path + ("?" + sp.query if sp.query else "")):
                 nav_target = None  # login/SSO/consent scripts navigating a headless browser: not a redirect
             else:
-                row["js_redirect"] = normalize(nav_target, url)[0]
+                # a script navigation counts only if a second render navigates to the same place (timers,
+                # consent banners and A/B scripts navigate in some loads only)
+                _, nav2 = await self.renderer.render(url, html)
+                if nav2 and normalize(nav2, url)[0] == normalize(nav_target, url)[0]:
+                    row["js_redirect"] = normalize(nav_target, url)[0]
+                else:
+                    nav_target = None
         # Only a MEANINGFUL difference replaces the stored page. Small gains come from timing (a carousel
         # or a lazy widget that loaded in one run and not in the other); keeping the raw HTML for those makes
         # two runs store the same text. Same threshold as the render decision itself.
@@ -732,10 +738,12 @@ class SiteCrawl:
                     meaningful = False
                 gain = min(gain, gain2)
         upd = {}
-        if meaningful or nav_target:
+        if nav_target:
+            upd["js_redirect"] = row["js_redirect"]
+        if meaningful:
             upd = {k: row[k] for k in ("title", "h1", "canonical", "meta_robots", "hreflang", "js_redirect")
                    if row.get(k) is not None}
-        if meaningful or nav_target:
+        if meaningful:  # a redirect alone does not replace the content: the raw HTML stays the page's text
             import zlib
             upd["html"] = zlib.compress(rendered.encode("utf-8", "replace"), 6)
         st = self.store
