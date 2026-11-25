@@ -22,6 +22,7 @@ from .urlnorm import host_of, is_asset, netloc_of, normalize, reg_domain, site_s
 
 MAX_RETRIES = 4
 TRANSIENT_RETRIES = 3
+UNSURE_LO, UNSURE_HI = 0.10, 0.35   # render gains this close to the 0.20 line are checked twice
 # pages per site = rate x crawl seconds x this; leaves room for redirects, robots, sitemaps, renders and
 # back-off, so a normal site is fully crawled to the cap BEFORE the deadline (a deadline cut is timing-dependent)
 PAGE_EFFICIENCY = 0.75
@@ -720,6 +721,16 @@ class SiteCrawl:
         # two runs store the same text. Same threshold as the render decision itself.
         from .render import DIFF_THRESHOLD
         meaningful = gain > DIFF_THRESHOLD
+        if UNSURE_LO <= gain <= UNSURE_HI:
+            # Close to the line: one render can land on either side (late XHR, lazy widgets). Render once
+            # more and use the rendered DOM only if BOTH renders agree it changes the page; otherwise keep the
+            # raw HTML. A page then flips only if two renders in a row disagree with the other run's two.
+            again, _ = await self.renderer.render(url, html)
+            if again:
+                gain2 = token_gain(raw_vt, P.visible_text(P.to_tree(again)))
+                if (gain2 > DIFF_THRESHOLD) != meaningful:
+                    meaningful = False
+                gain = min(gain, gain2)
         upd = {}
         if meaningful or nav_target:
             upd = {k: row[k] for k in ("title", "h1", "canonical", "meta_robots", "hreflang", "js_redirect")

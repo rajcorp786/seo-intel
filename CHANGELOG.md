@@ -2,6 +2,15 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.1.2 (2026-11-25)
+Live pair re-run with 1.1.1: competitor (1,600 pages) **fully identical**; target identical except 1 of 118
+pages (`?elementskit_template=new-header`), whose render gain sat on the 0.20 line: stored rendered in one run,
+raw in the other.
+
+| Area | What changed |
+|---|---|
+| Render | A gain between 0.10 and 0.35 is checked with a second render; the rendered DOM is used only if both renders agree it changes the page |
+
 ## 1.1.1 (2026-11-25)
 Live pair re-run with 1.1.0 (hybonelevators.com vs eliteelevators.com, two fresh runs): same pages, same stop
 step, **0 pages with different main text, 0 status changes**. Only the "rendered" flag of 8 pages differed:
