@@ -18,6 +18,8 @@ python -m pip install -e . && python -m playwright install chromium
    (~2–4 min).
    For anything that touches fetching, rendering or extraction, also run the live-site randomness test:
    `set SEO_INTEL_CHAOS=1` together with `SEO_INTEL_E2E=1` (~7 min for both tests).
+   If you touched fetching, rendering or extraction, also run the live-site randomness test: set
+   `SEO_INTEL_CHAOS=1` as well as `SEO_INTEL_E2E=1` (~7 min for both end-to-end tests).
 3. If you touched `agent.py`, `claims.py` or `report.py`: run `python devsite/mock_agent_check.py RUN_DIR`
    on a finished run. It must print `MOCK AGENT CHECK PASSED` (no invented fact reaches the plan).
 4. Add a line to `CHANGELOG.md`. If you replaced an approach, add the failed version and its numbers to
