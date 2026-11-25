@@ -203,6 +203,10 @@ def cmd_determinism(a):
                 out[str(p.relative_to(d))] = hashlib.sha256(p.read_bytes()).hexdigest()
         return out
     da, db_ = digest(a.a), digest(a.b)
+    if not da or not db_:
+        missing = [d for d, x in ((a.a, da), (a.b, db_)) if not x]
+        print(json.dumps({"error": f"no report files in {', '.join(missing)} (wrong folder or unfinished run)"}))
+        return 2
     diff = sorted(k for k in set(da) | set(db_) if da.get(k) != db_.get(k))
     print(json.dumps({"files": len(da), "identical": not diff, "different_files": diff}, indent=1))
     return 0 if not diff else 1
@@ -222,6 +226,10 @@ def cmd_diff_runs(a):
         stats = {(s_, k): v for s_, k, v in db.execute("SELECT site, k, v FROM stats")}
         return pages, stats
 
+    for d in (a.a, a.b):
+        if not (Path(d) / "crawl.db").is_file():
+            print(json.dumps({"error": f"{d}: no crawl.db (wrong folder or unfinished run)"}))
+            return 2
     pa, sa = load(a.a)
     pb, sb = load(a.b)
     out = {}

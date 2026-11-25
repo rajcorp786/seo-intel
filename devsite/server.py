@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import random
+import re
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -232,6 +233,32 @@ class Site:
         return self.page_html(f"/blog/page/{n}/", p, f"<ul>{lst}</ul><div class='pager'>{pager}</div>")
 
 
+def chaos(html):
+    """What live sites do on every request: nonces, timestamps, CSS variants, a shuffled 'related posts'
+    widget, a footer clock, and a JS widget that appears after a random delay."""
+    rnd = random.Random()
+    nonce = "%016x" % rnd.getrandbits(64)
+    css = f"<style>.v{rnd.randint(1, 999)}{{width:{rnd.randint(1, 99)}%}}</style>"
+    head = (f"<meta name='csrf-token' content='{nonce}'>{css}"
+            f"<!-- page generated in 0.{rnd.randint(100, 999)}s at {time.time():.3f} -->")
+    html = html.replace("</head>", head + "</head>", 1)
+    m = re.search(r"(<aside class='sidebar'><h3>Related posts</h3><ul>)(.*?)(</ul></aside>)", html)
+    if m:
+        items = re.findall(r"<li>.*?</li>", m.group(2))
+        rnd.shuffle(items)
+        html = html[:m.start()] + m.group(1) + "".join(items) + m.group(3) + html[m.end():]
+    clock = time.strftime("%H:%M:%S")
+    html = html.replace("</footer>", f"<p class='gen'>Updated {clock} · {rnd.randint(2, 40)} visitors online</p></footer>", 1)
+    delay = rnd.randint(0, 3000)
+    widget = ("<script>var t0=new Date().toISOString();setTimeout(function(){var m=document.querySelector('main')||document.body;"
+              "var d=document.createElement('div');d.className='chat';d.textContent='Chat with us: '"
+              "+(1+Math.floor(Math.random()*9))+' agents online since '+t0;"
+              "m.appendChild(d);}," + str(delay) + ");</script>")
+    # (text computed in the browser: random count + clock + random delay. Text that the SERVER changes on
+    #  every request inside the main content is a real content change; no tool can make that repeatable.)
+    return html.replace("</body>", widget + "</body>", 1)
+
+
 def hash_seed(s):
     return int(hashlib.md5(s.encode()).hexdigest()[:8], 16)
 
@@ -249,6 +276,15 @@ def make_handler(site: Site):
             pass
 
         def send(self, code, body="", ctype="text/html; charset=utf-8", headers=None):
+            if THROTTLE.get("chaos") and code == 200 and isinstance(body, str) and ctype.startswith("text/html"):
+                r = random.random()
+                if r < 0.04:   # a live server hiccup: 502 or a dropped connection, on any page, any time
+                    if r < 0.02:
+                        self.close_connection = True
+                        return
+                    code, body = 502, "<html><body>Bad gateway</body></html>"
+                else:
+                    body = chaos(body)
             b = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
             self.send_header("Content-Type", ctype)
@@ -369,6 +405,8 @@ def make_handler(site: Site):
             return self.send(404, "<html><head><title>404 Not Found</title></head><body><h1>404</h1></body></html>")
 
         def cond(self, html):
+            if THROTTLE.get("chaos"):
+                return self.send(200, html)  # per-request nonces: a live page has no stable ETag
             b = html.encode("utf-8")
             etag = '"' + hashlib.md5(b).hexdigest() + '"'
             if self.headers.get("If-None-Match") == etag:
@@ -392,6 +430,8 @@ def main():
     ap.add_argument("--gold", default=None)
     ap.add_argument("--variant", type=int, default=0)
     ap.add_argument("--delay", type=int, default=0, help="fixed latency in ms per request (slow-site test)")
+    ap.add_argument("--chaos", action="store_true", help="live-site randomness: 4%% 502/dropped connections, nonces, "
+                    "timestamps, CSS variants, shuffled widgets, random-delay JS widget")
     ap.add_argument("--jitter", action="store_true", help="random 0-300 ms latency per request")
     ap.add_argument("--slow-js", action="store_true", help="JS sub-resource hangs for 200 s (render hang test)")
     ap.add_argument("--throttle", type=int, default=0, help="N: answer all but every N-th request with 429 (Retry-After: 60)")
@@ -401,6 +441,7 @@ def main():
     THROTTLE["slow_js"] = a.slow_js
     THROTTLE["jitter"] = a.jitter
     THROTTLE["delay"] = a.delay
+    THROTTLE["chaos"] = a.chaos
     t = Site("target", a.port_target, variant=a.variant)
     r = Site("rival", a.port_rival, rival=True)
     if a.gold:

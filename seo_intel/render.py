@@ -15,6 +15,7 @@ fetcher, so rendering never breaks politeness.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import re
 from collections import defaultdict
 
@@ -23,6 +24,15 @@ from .urlnorm import host_of, section_template as template
 RENDER_SHARE = 0.15
 PROBES_PER_TEMPLATE = 2
 DIFF_THRESHOLD = 0.20
+FIXED_EPOCH = _dt.datetime(2026, 1, 1, tzinfo=_dt.timezone.utc)  # the page's "now" in every render
+SETTLE_MS = 5000                 # simulated time given to page timers after load
+DETERMINISTIC_JS = """(() => {
+  let s = 0x2545F491;
+  Math.random = function () { s ^= s << 13; s ^= s >>> 17; s ^= s << 5; return ((s >>> 0) % 1e9) / 1e9; };
+  if (window.crypto && crypto.getRandomValues) {
+    crypto.getRandomValues = function (a) { for (let i = 0; i < a.length; i++) a[i] = Math.floor(Math.random() * 256); return a; };
+  }
+})();"""
 TOK = re.compile(r"\w+", re.U)
 CACHE_MAX = 150 * 1024 * 1024
 TRACKERS = re.compile(r"google-analytics\.com|googletagmanager\.com|doubleclick\.net|googlesyndication\.com|"
@@ -34,9 +44,14 @@ TRACKERS = re.compile(r"google-analytics\.com|googletagmanager\.com|doubleclick\
                       r"onetrust\.com|cookiebot\.com|youtube\.com/(?:embed|iframe_api)|vimeo\.com", re.I)
 
 
+_NUM = re.compile(r"\d+")
+
+
 def token_gain(raw_text: str, rendered_text: str) -> float:
-    r = set(TOK.findall((raw_text or "").lower()))
-    n = set(TOK.findall((rendered_text or "").lower()))
+    """Share of distinct rendered words not in the raw HTML. Numbers count as one word ("0"): clocks,
+    counters and ids change on every request and must not move a page across the render threshold."""
+    r = set(_NUM.sub("0", t) for t in TOK.findall((raw_text or "").lower()))
+    n = set(_NUM.sub("0", t) for t in TOK.findall((rendered_text or "").lower()))
     if not n:
         return 0.0
     return len(n - r) / len(n)
@@ -118,7 +133,17 @@ class Renderer:
         async with self.sem:
             ctx = await self._browser.new_context(user_agent="Mozilla/5.0 (compatible; seo-intel/1.0; +https://github.com/rajcorp786/seo-intel)",
                                                   java_script_enabled=True)
+            # Same page in, same DOM out: a fixed clock (Date, timers) and a seeded Math.random, so a widget that
+            # appears "after 0-3 s" or shows "updated 07:41" renders identically in every run
+            await ctx.add_init_script(DETERMINISTIC_JS)
             page = await ctx.new_page()
+            fake_clock = False
+            try:
+                await page.clock.install(time=FIXED_EPOCH)
+                await page.clock.pause_at(FIXED_EPOCH + _dt.timedelta(seconds=1))  # time moves only via run_for
+                fake_clock = True
+            except Exception:
+                fake_clock = False  # older Playwright: real clock (still works, less repeatable)
             nav = {"target": None, "main_done": False}
 
             async def handle(route, request):
@@ -158,10 +183,15 @@ class Renderer:
             out = None
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                try:
-                    await page.wait_for_load_state("networkidle", timeout=idle_ms)
-                except Exception:
-                    pass
+                for _ in range(2):
+                    if fake_clock:
+                        await page.clock.run_for(SETTLE_MS)  # every timer due in the first seconds fires, in order
+                    try:
+                        await page.wait_for_load_state("networkidle", timeout=idle_ms)
+                    except Exception:
+                        pass
+                if fake_clock:
+                    await page.clock.run_for(SETTLE_MS)
                 out = await page.content()
             except Exception:
                 out = None

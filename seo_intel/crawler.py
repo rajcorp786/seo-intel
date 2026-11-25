@@ -457,11 +457,12 @@ class SiteCrawl:
         st.db.execute("UPDATE pages SET run=?, unchanged=1 WHERE url=?", (self.run, url))
         st.db.execute("UPDATE urls SET state='done' WHERE url=?", (url,))
         st.db.execute("COMMIT")
-        r = st.db.execute("SELECT html, x_robots, vhash, raw_hash FROM pages WHERE url=?", (url,)).fetchone()
+        r = st.db.execute("SELECT html, x_robots, vhash, raw_hash, rendered FROM pages WHERE url=?", (url,)).fetchone()
         if not r or r[0] is None:
             return
         html = zlib.decompress(r[0]).decode("utf-8", "replace")
         self.n_html += 1
+        self.n_rendered += 1 if r[4] else 0  # a reused rendered page still counts against the 15% render cap
         fields, _ = P.parse_page(html, url)
         row = {"x_robots": r[1]}
         links = self.apply_fields(row, fields, url)

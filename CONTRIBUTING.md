@@ -16,6 +16,8 @@ python -m pip install -e . && python -m playwright install chromium
    synthetic sites, runs the tool twice and checks the two outputs are byte-identical:
    `set SEO_INTEL_E2E=1` (Mac/Linux: `export SEO_INTEL_E2E=1`), then `python -m pytest tests/test_e2e.py`
    (~2–4 min).
+   For anything that touches fetching, rendering or extraction, also run the live-site randomness test:
+   `set SEO_INTEL_CHAOS=1` together with `SEO_INTEL_E2E=1` (~7 min for both tests).
 3. If you touched `agent.py`, `claims.py` or `report.py`: run `python devsite/mock_agent_check.py RUN_DIR`
    on a finished run. It must print `MOCK AGENT CHECK PASSED` (no invented fact reaches the plan).
 4. Add a line to `CHANGELOG.md`. If you replaced an approach, add the failed version and its numbers to

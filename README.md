@@ -29,7 +29,7 @@ Check it works: `seo-intel --version`, `python -m pytest tests` (49 tests, ~10 s
 
 **Quick install without cloning** (inside an activated venv):
 `python -m pip install git+https://github.com/rajcorp786/seo-intel.git && python -m playwright install chromium`
-(add `@v1.0.9` after `.git` for a fixed version).
+(add `@v1.1.0` after `.git` for a fixed version).
 
 * Always use `python -m pip`, not plain `pip`: on many machines `pip` is not on the PATH.
 * The second half of the install line downloads the headless browser used for JavaScript pages. If you skip

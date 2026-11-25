@@ -34,6 +34,16 @@ Everything below was measured during development on the synthetic dev pair in `d
   session-id records and trap samples come out exactly as from a fetch. Result: incremental output equals a
   fresh crawl except `change_report.json`; all four planted next-day changes are detected.
 
+**Rendering was the last source of run-to-run noise (v1.0.9–1.1.0).**
+* *Failed:* store the rendered DOM whenever it added > 5% text, with the browser's real clock. On the live
+  pair 7 pages were rendered in one run only and 4 pages stored the rendered DOM in one run and raw HTML in the
+  other; on the chaos site a JS widget ("N agents online", random delay) and per-request numbers moved a page's
+  render gain between 0.18 and 0.20, right across the 0.20 threshold.
+* *Now:* fixed fake clock + seeded randomness inside the browser, numbers ignored in the gain, rendered DOM
+  stored only above the threshold. 3 of 3 fresh chaos runs identical, including every page's main text.
+* *Limit that remains:* text that the server itself changes inside the main content on every request
+  (a server-side random number in an article) is a real content change; no tool can make that repeatable.
+
 **Repeatability on a live pair (v1.0.7–1.0.8).**
 * *Failed:* store a timeout as the page's result. Two fresh runs on hybonelevators.com differed in 11 of 12
   files; `diff-runs` showed only 2 target pages differed (network error in one run, 200 in the other) and the

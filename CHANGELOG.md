@@ -2,6 +2,24 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.1.0 (2026-11-25): live-site repeatability, tested end to end
+Instead of fixing one live-run difference at a time, a test site now behaves like a live one
+(`devsite/server.py --chaos`): 4% 502s and dropped connections, per-request nonces and clocks, CSS variants,
+a shuffled "related posts" widget, a footer clock and a JS widget with random content and a random delay.
+Every difference found there was fixed:
+
+| Area | What changed |
+|---|---|
+| Render | Fixed browser clock (2026-01-01, time moves only in fixed steps) and seeded `Math.random` / `crypto.getRandomValues`: the same page renders to the same DOM |
+| Render | The render gain ignores numbers (clocks, counters), so a page cannot cross the 20% threshold in one run only |
+| Render cap | Incremental runs counted only new renders against the 15% cap; reused rendered pages now count too (one incremental run had reached 20%) |
+| Eval | `determinism` / `diff-runs` now stop with an error on a wrong or unfinished folder instead of reporting "identical" |
+| Tests | `SEO_INTEL_E2E=1 SEO_INTEL_CHAOS=1 pytest tests/test_e2e.py`: two fresh runs on the chaos site must be byte-identical with the same main text on every page |
+
+Checked: 3 fresh chaos runs identical; crash + resume (2 kill points) on the chaos site identical to an
+uninterrupted run; slow site (4 s/request) identical; hanging-JS run 107 s of a 120 s budget; mock agent 0 false
+claims; 48 unit tests + 2 end-to-end tests.
+
 ## 1.0.9 (2026-11-25): rendering made repeatable
 Second live diff-runs (v1.0.8): no network errors any more, same pages and stop step; the remaining
 differences were 7 target pages rendered in one run only and 4 pages whose stored text was the rendered DOM in
