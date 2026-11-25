@@ -90,6 +90,7 @@ def crawl_summary(store, site):
     requests = store.count("SELECT COUNT(*) FROM pages WHERE site=?", (site,))
     return {"pages_by_status": dict(sorted(st.items())), "html_pages": html,
             "rendered_pages": rendered, "rendered_share": round(rendered / html, 4) if html else 0,
+            "warning": store.get_meta(f"empty_reason:{site}") if not html else None,
             "render_reasons": dict(sorted(reasons.items())),
             "render_available": bool(store.get_stat(site, "render_available", 0)),
             "traps": traps, "trap_urls_avoided": sum(t["hits"] for t in traps if t["kind"] != "session"),

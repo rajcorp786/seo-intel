@@ -199,6 +199,28 @@ class SiteCrawl:
         st.set_meta(f"state:{self.role}", "complete")
         self.log(f"[{self.role}] done: {self.n_html} html pages, {self.n_rendered} rendered, "
                  f"{self.trap_avoided} trap URLs avoided, {elapsed:.0f}s")
+        if self.n_html == 0:
+            self.explain_empty()
+
+    def explain_empty(self):
+        """A site that gives no HTML page must say why, loudly (unreachable, robots, redirect elsewhere ...)."""
+        st = self.store
+        row = st.db.execute("SELECT status, final_url FROM pages WHERE url=?", (self.start_url,)).fetchone()
+        blocked = st.count("SELECT COUNT(*) FROM urls WHERE site=? AND state='blocked'", (self.role,))
+        if row is None:
+            why = ("robots.txt blocks the start page" if blocked else
+                   "the start page was never fetched (DNS / connection / TLS error, or no time left)")
+        elif not isinstance(row[0], int) or row[0] < 0:
+            why = "the start page could not be fetched (network error after retries)"
+        elif row[0] in (301, 302, 303, 307, 308):
+            why = f"the start page redirects to {row[1]}, outside this site; run again with that address"
+        elif row[0] in (401, 403):
+            why = f"the site refused the crawler (HTTP {row[0]}); it blocks bots"
+        else:
+            why = f"the start page answered HTTP {row[0]}"
+        msg = f"ERROR: no HTML pages from {self.start_url}: {why}"
+        self.log(f"[{self.role}] {msg}")
+        st.set_meta(f"empty_reason:{self.role}", msg)
 
     def restore_render_queue(self):
         for u, rr in self.store.db.execute("SELECT url, render_reason FROM pages WHERE site=? AND rendered=0 AND "
@@ -671,6 +693,14 @@ class SiteCrawl:
         if not rendered:  # a browser hiccup: one more try, so a timeout does not decide what is stored
             rendered, nav_target = await self.renderer.render(url, html)
         if not rendered:
+            # Record the ATTEMPT, not the browser's luck: the page counts as rendered (it used render budget)
+            # and keeps its raw HTML, exactly like a render that changed nothing. Otherwise a page whose render
+            # timed out in one run only would be reported differently in the two runs.
+            st = self.store
+            st.db.execute("BEGIN")
+            st.db.execute("UPDATE pages SET rendered=1, render_reason=? WHERE url=?", (f"{reason}:failed", url))
+            st.db.execute("COMMIT")
+            self.log(f"[{self.role}] render failed twice, raw HTML kept: {url}")
             return None
         raw_vt = P.visible_text(P.to_tree(html))
         ren_vt = P.visible_text(P.to_tree(rendered))

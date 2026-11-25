@@ -2,6 +2,17 @@
 
 `seo-intel --version` prints the installed version. Every run logs it in `logs/run.log` and `logs/run_stats.json`.
 
+## 1.1.1 (2026-11-25)
+Live pair re-run with 1.1.0 (hybonelevators.com vs eliteelevators.com, two fresh runs): same pages, same stop
+step, **0 pages with different main text, 0 status changes**. Only the "rendered" flag of 8 pages differed:
+renders that changed nothing (gain 0.00–0.09) succeeded in one run and failed/timed out in the other.
+
+| Area | What changed |
+|---|---|
+| Render | A render that fails twice is recorded as an attempt (counts toward the 15% cap, raw HTML kept), the same as a render that changed nothing, so reports no longer depend on browser timeouts |
+| Errors | A site that gives no HTML page says why (unreachable, robots, off-site redirect, 401/403 …) in the log and in `crawl_summary.json → warning` |
+| Tests | End-to-end tests fail on an empty crawl instead of passing as "identical" |
+
 ## 1.1.0 (2026-11-25): live-site repeatability, tested end to end
 Instead of fixing one live-run difference at a time, a test site now behaves like a live one
 (`devsite/server.py --chaos`): 4% 502s and dropped connections, per-request nonces and clocks, CSS variants,

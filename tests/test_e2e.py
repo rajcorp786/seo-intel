@@ -28,6 +28,7 @@ def test_e2e(tmp_path):
         r = subprocess.run([sys.executable, "-m", "seo_intel.evalcli", "determinism", str(tmp_path / "a"),
                             str(tmp_path / "b")], capture_output=True, text=True)
         assert json.loads(r.stdout)["identical"]
+        assert json.loads((tmp_path / "a" / "report" / "crawl_summary.json").read_text())["target"]["html_pages"] >= 100
         cs = json.loads((tmp_path / "a" / "report" / "crawl_summary.json").read_text())["target"]
         kinds = {t["kind"] for t in cs["traps"]}
         assert {"calendar", "facet", "path", "session"} <= kinds
@@ -63,5 +64,6 @@ def test_e2e_live_site_randomness(tmp_path):
             assert diff[site]["main_text_changed"] == 0 and diff[site]["status_changed"] == 0, diff[site]
         for site, cs in json.loads((tmp_path / "a" / "report" / "crawl_summary.json").read_text()).items():
             assert cs["rendered_share"] <= 0.15
+            assert cs["html_pages"] >= 40, (site, cs["html_pages"])  # an empty crawl is not "repeatable"
     finally:
         srv.terminate()

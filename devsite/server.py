@@ -397,6 +397,8 @@ def make_handler(site: Site):
                     if THROTTLE.get("slow_js"):
                         import time as _t
                         _t.sleep(200)  # a sub-resource that never answers in time
+                    if THROTTLE.get("chaos") and random.random() < 0.3:
+                        time.sleep(40)  # live CDN hiccup: the render that needs this script times out
                     return self.send(200, "console.log('app');", "application/javascript")
                 if path == "/private-report/":
                     return self.send(200, s.page_html(path, s.pages[path]), headers={"X-Robots-Tag": "noindex, nofollow"})
