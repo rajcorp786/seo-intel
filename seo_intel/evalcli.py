@@ -76,7 +76,7 @@ def cmd_render_audit(a):
         missed = []
         for u in sample:
             html = st.html(u)
-            out, _ = await r.render(u, html)
+            out, _ = await r.render_sure(u, html)
             if out:
                 g = token_gain(P.visible_text(P.to_tree(html)), P.visible_text(P.to_tree(out)))
                 if g > 0.2:
@@ -305,7 +305,8 @@ def cmd_diff_runs(a):
             except zlib.error:
                 ta, tb = str(ta or ""), str(tb or "")
             i = next((k for k in range(min(len(ta), len(tb))) if ta[k] != tb[k]), min(len(ta), len(tb)))
-            examples.append({"url": u, "html_a": ta[max(0, i - 80):i + 120], "html_b": tb[max(0, i - 80):i + 120]})
+            examples.append({"url": u, "render_a": A[u][7], "render_b": B[u][7],
+                             "html_a": ta[max(0, i - 80):i + 120], "html_b": tb[max(0, i - 80):i + 120]})
         out[site] = {
             "pages_a": len(A), "pages_b": len(B),
             "fetched_only_in_a": len(only_a), "fetched_only_in_b": len(only_b),

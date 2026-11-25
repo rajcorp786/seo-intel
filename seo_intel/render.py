@@ -93,11 +93,19 @@ class Renderer:
         self.error = None
 
     async def start(self):
-        if self._browser or not self.available:
+        if not self.available:
             return
+        if self._browser is not None:
+            try:
+                if self._browser.is_connected():
+                    return
+            except Exception:
+                pass
+            self._browser = None  # the browser process died (crash / out of memory): launch a new one
         try:
-            from playwright.async_api import async_playwright
-            self._pw = await async_playwright().start()
+            if self._pw is None:
+                from playwright.async_api import async_playwright
+                self._pw = await async_playwright().start()
             try:
                 self._browser = await self._pw.chromium.launch(args=["--disable-gpu", "--no-sandbox"])
             except Exception:
@@ -119,34 +127,77 @@ class Renderer:
         except Exception:
             pass
 
-    async def render(self, url: str, html: str, timeout_ms=10000, idle_ms=2500, hard_s=25.0):
-        """Return (rendered_html, js_navigation_target_or_None) or (None, None). Never runs longer than hard_s."""
-        await self.start()
-        if not self.available:
-            return None, None
-        try:
-            return await asyncio.wait_for(self._render(url, html, timeout_ms, idle_ms), timeout=hard_s)
-        except (asyncio.TimeoutError, Exception):
-            return None, None
+    # ---- Repeatable rendering -------------------------------------------------------------------------
+    # A render is used only when it is COMPLETE: every sub-resource the page asked for either arrived or was
+    # refused for a permanent reason (blocked type, tracker, robots, 4xx). If a script or API call failed for
+    # a passing reason (network error, 5xx, 429, time-out, host backing off) the render is thrown away and
+    # tried again, because a DOM built without that script is a different page. So what is stored never
+    # depends on which requests happened to fail in this run.
+    # Time limits count from the moment the render STARTS, not from when it was queued behind other renders.
+    RETRY_PLAN = (40.0, 70.0, 70.0)   # hard limit in seconds for try 1, 2, 3
+    SUB_TRIES = 3                     # tries for one script/API request inside a render
+    SUB_TIMEOUT = 15.0
 
-    # A cold render fetches every script of the page for the first time (no cache yet); on a heavy WordPress
-    # page that alone can pass 10 s, so the FIRST render of a page fails while every later one succeeds. That
-    # made one run store raw HTML and the other the rendered DOM. render_sure retries with longer limits
-    # (scripts fetched during a failed try are cached, so later tries are fast) before giving up.
-    RETRY_PLAN = ((10000, 25.0), (30000, 60.0), (30000, 60.0))
+    async def render(self, url: str, html: str, hard_s=40.0):
+        """One try. Returns (rendered_html, js_navigation_target_or_None) or (None, None)."""
+        out, nav, _ = await self._attempt(url, html, hard_s)
+        return out, nav
 
     async def render_sure(self, url: str, html: str):
-        for i, (t_ms, hard) in enumerate(self.RETRY_PLAN):
-            out, nav = await self.render(url, html, timeout_ms=t_ms, hard_s=hard)
+        """Up to 3 tries; scripts fetched in a failed try stay cached, so later tries are fast."""
+        for i, hard in enumerate(self.RETRY_PLAN):
+            out, nav, passing = await self._attempt(url, html, hard)
             if out:
                 return out, nav
             if not self.available:
                 break
-            await asyncio.sleep(2 * (i + 1))
+            await asyncio.sleep(2.0 * (i + 1) if passing else 0.3)
         return None, None
 
-    async def _render(self, url, html, timeout_ms, idle_ms):
-        async with self.sem:
+    async def _attempt(self, url, html, hard_s):
+        await self.start()
+        if not self.available:
+            return None, None, False
+        async with self.sem:  # the clock starts here: waiting for a free browser page costs no render time
+            await self.start()
+            if not self.available:
+                return None, None, False
+            state = {"pending": 0, "passing": False}
+            try:
+                out, nav = await asyncio.wait_for(self._render(url, html, hard_s, state), timeout=hard_s)
+            except asyncio.TimeoutError:
+                return None, None, True
+            except Exception:
+                return None, None, True
+            if state["passing"]:
+                return None, None, True  # incomplete: a sub-resource failed for a passing reason
+            return out, nav, False
+
+    async def _sub(self, rurl, rtype, state):
+        """Fetch one sub-resource. Returns (body, ctype), or None when it is permanently unavailable.
+        Sets state['passing'] when it failed for a passing reason."""
+        is_api = rtype in ("xhr", "fetch")
+        for i in range(self.SUB_TRIES):
+            if self.fetcher.limiter.is_paused(host_of(rurl)):
+                state["passing"] = True  # host is throttling us right now: this render cannot be trusted
+                return None
+            try:
+                r = await asyncio.wait_for(self.fetcher.get_once(rurl, any_body=True), timeout=self.SUB_TIMEOUT)
+            except asyncio.TimeoutError:
+                if is_api:
+                    return None  # an endpoint that never answers (long-poll): the same in every run
+                r = {"status": None}
+            st = r.get("status")
+            if st == 200:
+                return r["body"], r["headers"].get("content-type", "application/octet-stream")
+            if st is not None and st not in (408, 425, 429) and st < 500:
+                return None  # 3xx/4xx: permanent
+            await asyncio.sleep(0.5 * (i + 1))
+        state["passing"] = True
+        return None
+
+    async def _render(self, url, html, hard_s, state):
+        if True:
             ctx = await self._browser.new_context(user_agent="Mozilla/5.0 (compatible; seo-intel/1.0; +https://github.com/rajcorp786/seo-intel)",
                                                   java_script_enabled=True)
             # Same page in, same DOM out: a fixed clock (Date, timers) and a seeded Math.random, so a widget that
@@ -163,6 +214,12 @@ class Renderer:
             nav = {"target": None, "main_done": False}
 
             async def handle(route, request):
+                try:
+                    await handle2(route, request)
+                except Exception:
+                    pass  # page closed while a request was in flight
+
+            async def handle2(route, request):
                 rtype = request.resource_type
                 rurl = request.url
                 if request.is_navigation_request() and request.frame == page.main_frame:
@@ -170,47 +227,69 @@ class Renderer:
                         nav["main_done"] = True
                         await route.fulfill(status=200, body=html, content_type="text/html; charset=utf-8")
                         return
-                    nav["target"] = rurl
+                    if nav["target"] is None:
+                        nav["target"] = rurl
                     await route.abort()
                     return
-                if rtype in ("image", "media", "font", "stylesheet", "websocket", "manifest", "other") \
+                if rtype in ("image", "media", "font", "stylesheet", "websocket", "manifest", "other",
+                             "eventsource", "ping", "texttrack", "cspviolationreport") \
                         or not rurl.startswith("http") or TRACKERS.search(rurl):
                     await route.abort()
                     return
                 if not self.robots_allowed(rurl):
                     await route.abort()
                     return
-                hit = self.cache.get(rurl) if rtype == "script" else None
-                if hit is None and self.fetcher.limiter.is_paused(host_of(rurl)):
-                    await route.abort()  # host is throttling us: don't queue behind its back-off
+                if request.method != "GET":
+                    await route.abort()  # a crawler does not POST
                     return
+                hit = self.cache.get(rurl) if rtype == "script" else None
                 if hit is None:
-                    r = await self.fetcher.get_once(rurl, any_body=True)
-                    if r.get("status") != 200:
+                    state["pending"] += 1
+                    try:
+                        hit = await self._sub(rurl, rtype, state)
+                    finally:
+                        state["pending"] -= 1
+                    if hit is None:
                         await route.abort()
                         return
-                    hit = (r["body"], r["headers"].get("content-type", "application/octet-stream"))
-                    if rtype == "script" and self.cache_bytes + len(hit[0]) < CACHE_MAX:
+                    if rtype == "script" and self.cache_bytes + len(hit[0]) < CACHE_MAX and rurl not in self.cache:
                         self.cache[rurl] = hit
                         self.cache_bytes += len(hit[0])
                 await route.fulfill(status=200, body=hit[0], content_type=hit[1])
 
+            async def quiet():
+                """Wait until no sub-resource request is in flight (not: until a timer says so)."""
+                calm = 0
+                while calm < 3:
+                    await asyncio.sleep(0.1)
+                    calm = calm + 1 if state["pending"] == 0 else 0
+
             await page.route("**/*", handle)
             out = None
             try:
-                await page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                for _ in range(2):
-                    if fake_clock:
-                        await page.clock.run_for(SETTLE_MS)  # every timer due in the first seconds fires, in order
-                    try:
-                        await page.wait_for_load_state("networkidle", timeout=idle_ms)
-                    except Exception:
-                        pass
+                try:
+                    await page.goto(url, wait_until="domcontentloaded", timeout=max(5.0, hard_s - 8) * 1000)
+                except Exception:
+                    if nav["target"] is None:
+                        raise
+                    # the page's own script navigated away while loading; that navigation was blocked and
+                    # recorded, the original document is still there
                 if fake_clock:
-                    await page.clock.run_for(SETTLE_MS)
+                    for _ in range(3):
+                        await quiet()
+                        await page.clock.run_for(SETTLE_MS)  # every timer due in these seconds fires, in order
+                    await quiet()
+                else:
+                    for _ in range(2):
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=2500)
+                        except Exception:
+                            pass
+                    await quiet()
                 out = await page.content()
-            except Exception:
-                out = None
             finally:
-                await ctx.close()
+                try:
+                    await ctx.close()
+                except Exception:
+                    pass
             return out, nav["target"]

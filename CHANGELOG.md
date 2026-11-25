@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.6
+Rendering made repeatable under load (root cause of the last page that differed between two runs):
+- A render's time limit now starts when the render starts. Before, time spent waiting for a free browser page counted too, so in a busy crawl a page could "time out" without ever being loaded - in one run and not in the other.
+- A render is used only when it is complete. If a script or API call of the page failed for a passing reason (network error, 5xx, 429, time-out, host backing off) the render is discarded and retried (3 tries, 40/70/70 s); sub-resources are themselves retried 3 times. A DOM built without one of its scripts is never stored.
+- The renderer waits until no sub-resource request is in flight instead of a fixed idle timer.
+- A redirect fired by the page's script while it is still loading is recorded as a JS redirect instead of failing the render.
+- The browser is relaunched if its process dies mid-run.
+- New test `test_render_crowd`: 36 renders queued on 2 browser pages on the chaos dev site must all succeed with identical results.
+
 ## 1.1.5
 - Render retries: a page's FIRST render (cold script cache) could time out on heavy WordPress pages while every later render succeeded, so one run stored raw HTML and the other the rendered DOM (found with page-check on the Hybon header-template page). Renders now try 3 times with growing limits (10 s / 30 s / 30 s); confirm and double-check renders use the same retries.
 - page-check starts every simulated run with an empty cache, so it reproduces a fresh crawl.
